@@ -1045,6 +1045,36 @@ async def app_sessions_delete(session_id: str, request: Request):
     return loop_json(f"/loop/sessions/{urllib.parse.quote(session_id)}", method="DELETE")
 
 
+def clear_session_messages(session_id: str) -> int:
+    """Delete all relay-stored messages belonging to one API session.
+
+    The session row itself (title / pinned / since_id in the loop config) is
+    untouched — this only wipes the chat transcript. An empty / "__legacy__"
+    id targets messages that predate per-session tagging."""
+    session_id = (session_id or "").strip()
+    with db() as conn:
+        if session_id in ("", "__legacy__"):
+            cur = conn.execute(
+                "DELETE FROM messages WHERE json_extract(meta, '$.api_session') IS NULL "
+                "OR json_extract(meta, '$.api_session') = ''"
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM messages WHERE json_extract(meta, '$.api_session') = ?",
+                (session_id,),
+            )
+        conn.commit()
+        return cur.rowcount
+
+
+@app.delete("/app/sessions/{session_id}/messages")
+async def app_sessions_messages_clear(session_id: str, request: Request):
+    check_auth(request)
+    sid = urllib.parse.unquote(session_id).strip()
+    cleared = clear_session_messages(sid)
+    return {"cleared": cleared, "session_id": sid}
+
+
 WEB_DIR = Path(os.environ.get("RELAY_WEB_DIR", str(Path(__file__).parent.parent / "web")))
 if WEB_DIR.is_dir():
     from starlette.middleware.base import BaseHTTPMiddleware

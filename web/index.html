@@ -1146,6 +1146,7 @@
   .config-actions{ display:flex; gap:8px; margin-top:10px; }
   .config-action{ flex:1; border:1px solid var(--card-line); border-radius:10px; padding:8px; background:var(--seg-track); color:var(--text); font:inherit; font-size:12px; cursor:pointer; }
   .config-action.primary{ background:var(--send-bg); color:var(--accent-fg); }
+  .config-action.danger{ color:#e05a4d; border-color:#e05a4d55; background:transparent; }
   .config-row{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; }
   .config-row input{ min-width:0; }
   .config-check{ display:flex; align-items:center; gap:6px; color:var(--text-soft); font-size:12px; white-space:nowrap; }
@@ -2203,6 +2204,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
             <span class="config-entry-copy"><strong>指令注入</strong><span id="injectEntryStatus">开关控制 · 规则条目</span></span>
           </button>
+          <button class="config-entry" id="openDataConfigBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+            <span class="config-entry-copy"><strong>数据管理</strong><span id="dataEntryStatus">导出记录 · 清空窗口 · 清缓存</span></span>
+          </button>
         </div>
       </section>
 
@@ -2303,6 +2308,31 @@
         </div>
         <div class="config-actions"><button class="config-action primary" id="injectSaveBtn" type="button">保存注入包</button></div>
         <div class="push-hint" id="injectConfigHint"></div>
+      </section>
+
+      <!-- ── 数据管理 ── -->
+      <section class="settings-card config-view" id="dataConfigView">
+        <div class="config-view-head"><button class="config-view-back" data-config-back type="button" aria-label="返回连接与工具">‹</button><div class="config-view-title"><strong>数据管理</strong><span>导出记录 · 清空窗口 · 清除本机缓存</span></div></div>
+
+        <div class="config-field-label">导出聊天记录 <i class="info-i" title="把聊天记录打包成文件下载到手机。JSON 适合备份/恢复，文本适合直接阅读。">i</i></div>
+        <div class="segmented" id="exportScopeSeg" role="group" aria-label="导出范围">
+          <button type="button" data-val="current" class="active">当前窗口</button>
+          <button type="button" data-val="all">全部窗口</button>
+        </div>
+        <div class="segmented" id="exportFormatSeg" role="group" aria-label="导出格式">
+          <button type="button" data-val="json" class="active">JSON（备份）</button>
+          <button type="button" data-val="text">纯文本</button>
+        </div>
+        <div class="config-actions"><button class="config-action primary" id="exportChatBtn" type="button">导出下载</button></div>
+        <div class="push-hint" id="exportHint"></div>
+
+        <div class="config-field-label">清空当前窗口记录 <i class="info-i" title="删除当前窗口在服务器上的全部聊天记录。窗口本身（名字、置顶）保留，接着就是一个空白的新开始。删除后无法恢复。">i</i></div>
+        <div class="push-hint" id="clearSessionHint"></div>
+        <div class="config-actions"><button class="config-action danger" id="clearSessionBtn" type="button">清空窗口记录</button></div>
+
+        <div class="config-field-label">清除本机缓存 <i class="info-i" title="清掉手机浏览器缓存的页面壳和离线消息副本，保留登录状态（不用重新输密钥）。服务器上的聊天记录不受影响。">i</i></div>
+        <div class="config-actions"><button class="config-action" id="clearCacheBtn" type="button">清除本机缓存</button></div>
+        <div class="push-hint" id="clearCacheHint">清除后页面会自动刷新</div>
       </section>
 
       <!-- / 上下文阈值假按键已移除 -->
@@ -2553,6 +2583,11 @@ const personaConfigView = $("#personaConfigView"), modelParamsConfigView = $("#m
 const personaInput = $("#personaInput"), aiNameInput = $("#aiNameInput"), personaSaveBtn = $("#personaSaveBtn"), personaConfigHint = $("#personaConfigHint");
 const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
 const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
+const dataConfigView = $("#dataConfigView"), openDataConfigBtn = $("#openDataConfigBtn"), dataEntryStatus = $("#dataEntryStatus");
+const exportScopeSeg = $("#exportScopeSeg"), exportFormatSeg = $("#exportFormatSeg"), exportChatBtn = $("#exportChatBtn"), exportHint = $("#exportHint");
+const clearSessionBtn = $("#clearSessionBtn"), clearSessionHint = $("#clearSessionHint"), clearCacheBtn = $("#clearCacheBtn"), clearCacheHint = $("#clearCacheHint");
+let exportScope = "current";   // "current" | "all"
+let exportFormat = "json";     // "json" | "text"
 let editingMcpIndex = null;
 
 /* ════════ 固定聊天背景 + 本地头像 ════════ */
@@ -3541,6 +3576,7 @@ function setConfigView(view){
   if (personaConfigView) personaConfigView.classList.toggle("active", view === "persona");
   if (modelParamsConfigView) modelParamsConfigView.classList.toggle("active", view === "model-params");
   if (injectConfigView) injectConfigView.classList.toggle("active", view === "inject");
+  if (dataConfigView) dataConfigView.classList.toggle("active", view === "data");
 }
 function resetMcpForm(){
   editingMcpIndex = null;
@@ -3865,6 +3901,144 @@ async function loadModelParamsConfig(){
 $("#openPersonaConfigBtn")?.addEventListener("click", () => { setConfigView("persona"); loadPersonaConfig(); });
 $("#openModelParamsBtn")?.addEventListener("click", () => { setConfigView("model-params"); loadModelParamsConfig(); });
 openInjectConfigBtn?.addEventListener("click", () => { setConfigView("inject"); loadInjectConfig(); });
+
+/* ════════════ 数据管理：导出 / 清空窗口 / 清本机缓存 ════════════ */
+function fmtExportTs(ts){
+  try{ const d = new Date(ts); if (!isNaN(d)) return d.toLocaleString(); }catch(_){}
+  return ts || "";
+}
+openDataConfigBtn?.addEventListener("click", () => {
+  setConfigView("data");
+  const item = activeSessionObj();
+  const title = item ? (item.title || "新对话") : "旧主线 / Desktop 记录";
+  if (clearSessionHint) clearSessionHint.textContent = `当前窗口：「${title}」。清空后窗口从空白重新开始，删除不可恢复。`;
+});
+if (exportScopeSeg) exportScopeSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-val]");
+  if (!btn) return;
+  exportScope = btn.dataset.val;
+  exportScopeSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+});
+if (exportFormatSeg) exportFormatSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-val]");
+  if (!btn) return;
+  exportFormat = btn.dataset.val;
+  exportFormatSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+});
+async function fetchAllExportMessages(){
+  if (USE_MOCK) return Mock.history({ latest:true, limit:1000000 });
+  const rows = [];
+  let since = 0;
+  for (let guard = 0; guard < 400; guard++){
+    const params = new URLSearchParams({ since: String(since), limit: "500" });
+    if (exportScope === "current") params.set("session_id", activeApiSession || LEGACY_SESSION_ID);
+    const r = await fetch(`${API_BASE}/app/history?${params.toString()}`, { headers: authHeaders() });
+    if (!r.ok) throw new Error("history " + r.status);
+    const msgs = ((await r.json()).messages || []);
+    if (!msgs.length) break;
+    rows.push(...msgs);
+    const maxId = msgs.reduce((m, x) => Math.max(m, msgNum(x.id)), since);
+    if (maxId <= since) break;
+    since = maxId;
+    if (msgs.length < 500) break;
+  }
+  return rows;
+}
+function exportTextOf(msgs){
+  const lines = [
+    `# ${APP_NAME} 聊天记录导出`,
+    `# 导出时间：${new Date().toLocaleString()}`,
+    `# 范围：${exportScope === "current" ? "当前窗口" : "全部窗口"}`,
+    ""
+  ];
+  const groups = new Map(), order = [];
+  for (const m of msgs){
+    const sid = (m.meta && m.meta.api_session) || "";
+    if (!groups.has(sid)){ groups.set(sid, []); order.push(sid); }
+    groups.get(sid).push(m);
+  }
+  for (const sid of order){
+    let title = "旧主线 / Desktop 记录";
+    if (sid){ const s = apiSessions.find((x) => x.id === sid); title = s ? (s.title || "新对话") : sid; }
+    lines.push("", `──── ${title} ────`);
+    for (const m of groups.get(sid)){
+      const who = m.direction === "out" ? AI_NAME : HUMAN_NAME;
+      let body = String(m.text || "").trim();
+      const atts = (m.meta && Array.isArray(m.meta.attachments)) ? m.meta.attachments : [];
+      if (atts.length) body = (body ? body + " " : "") + atts.map((a) => `[附件:${a.name || "file"}]`).join(" ");
+      if (!body && m.kind === "voice") body = "🎤 语音";
+      lines.push(`[${fmtExportTs(m.ts)}] ${who}: ${body}`);
+    }
+  }
+  return lines.join("\n");
+}
+function downloadTextFile(name, text, mime){
+  const blob = new Blob([text], { type: mime || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  requestAnimationFrame(() => { a.remove(); URL.revokeObjectURL(url); });
+}
+exportChatBtn?.addEventListener("click", async () => {
+  if (!exportHint) return;
+  exportHint.textContent = "正在拉取全部记录…";
+  try{
+    const msgs = await fetchAllExportMessages();
+    if (!msgs.length){ exportHint.textContent = "没有可导出的记录"; return; }
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+    if (exportFormat === "json"){
+      const payload = {
+        app: APP_NAME, exported_at: new Date().toISOString(), scope: exportScope,
+        sessions: (apiSessions || []).map((s) => ({ id: s.id, title: s.title, pinned: s.pinned, created_at: s.created_at })),
+        messages: msgs
+      };
+      downloadTextFile(`tidal-echo-${exportScope}-${stamp}.json`, JSON.stringify(payload, null, 2), "application/json");
+    }else{
+      downloadTextFile(`tidal-echo-${exportScope}-${stamp}.txt`, exportTextOf(msgs), "text/plain;charset=utf-8");
+    }
+    exportHint.textContent = `已导出 ${msgs.length} 条消息`;
+  }catch(err){
+    exportHint.textContent = "导出失败：" + (err && err.message ? err.message : err);
+  }
+});
+clearSessionBtn?.addEventListener("click", async () => {
+  const item = activeSessionObj();
+  const title = item ? (item.title || "新对话") : "旧主线 / Desktop 记录";
+  if (!confirm(`清空窗口「${title}」的全部聊天记录？\n\n删除后无法恢复，窗口本身会保留。`)) return;
+  try{
+    const sid = activeApiSession || LEGACY_SESSION_ID;
+    const r = await fetch(`${API_BASE}/app/sessions/${encodeURIComponent(sid)}/messages`, {
+      method: "DELETE", headers: authHeaders()
+    });
+    if (!r.ok) throw new Error("clear " + r.status);
+    resetServerHistoryCache();
+    startChat([]);
+    showToast("窗口记录已清空");
+  }catch(_){
+    showToast("清空失败");
+  }
+});
+clearCacheBtn?.addEventListener("click", async () => {
+  if (!confirm("清除本机缓存？\n\n会清掉页面/Service Worker 缓存和离线消息副本，保留登录状态，随后自动刷新。服务器聊天记录不受影响。")) return;
+  try{
+    if ("caches" in window){
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  }catch(_){}
+  try{
+    if (window.indexedDB){
+      await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(CACHE_DB);
+        req.onsuccess = req.onerror = req.onblocked = () => resolve();
+      });
+    }
+  }catch(_){}
+  if (clearCacheHint) clearCacheHint.textContent = "缓存已清除，正在刷新…";
+  setTimeout(() => location.reload(), 600);
+});
 injectAddBtn?.addEventListener("click", () => {
   if (!injectEntriesList) return;
   const el = injectEntryElement({});
