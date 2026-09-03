@@ -685,6 +685,9 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
                 if choice0.get("finish_reason"):
                     finish_reason_val = choice0["finish_reason"]
                 delta = (choice0.get("delta") or {})
+                # ── 临时诊断:打印承载 thinking/tool 的流事件,用于确认 Ombre-Brain 实际字段(定位后可移除)──
+                if "choices" not in ev or (isinstance(delta, dict) and set(delta) - {"content", "role"}):
+                    print(f"[api_loop:debug_ev] {json.dumps(ev, ensure_ascii=False)[:900]}")
                 if delta.get("role"):
                     raw_msg["role"] = delta["role"]
                 chunk = delta.get("content") or ""
@@ -694,8 +697,6 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
                     thinking_blocks.append({"content": delta["reasoning_content"]})
                 elif delta.get("type") == "thinking":
                     thinking_blocks.append({"content": delta.get("thinking") or delta.get("content") or ""})
-                elif delta.get("type") == "thinking_delta":
-                    thinking_blocks.append({"content": delta.get("thinking") or ""})
                 elif delta.get("thinking"):
                     thinking_blocks.append({"content": delta["thinking"]})
                 elif ev.get("thinking"):
@@ -712,12 +713,6 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
                             tool_calls_buf[idx]["name"] = func["name"]
                         if func.get("arguments"):
                             tool_calls_buf[idx]["arguments_buf"] += func["arguments"]
-                elif delta.get("type") == "tool_use":
-                    tool_calls_buf.append({
-                        "id": delta.get("id") or "",
-                        "name": delta.get("name") or "",
-                        "arguments_buf": json.dumps(delta.get("input") or {}),
-                    })
 
     merged_thinking = []
     if thinking_blocks:
