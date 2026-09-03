@@ -61,10 +61,14 @@ TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
 STREAM_OUTPUT = os.environ.get("LOOP_STREAM", "1").lower() not in {"0", "false", "no"}
 FALLBACK_CODES = {401, 403, 404, 408, 409, 429, 500, 502, 503, 504}
 FORCE_NATIVE_TOOLS = os.environ.get("FORCE_NATIVE_TOOLS", "0").lower() in {"1", "true", "yes"}
+# 逗号分隔的模型名列表:这些模型强制走提示词工具模式(<tool_call> 文本协议),
+# 适用于不支持原生 tools 参数的中转端,免去每次先失败一次才自动切换。
+PROMPT_TOOLS_FORCE = {m.strip() for m in os.environ.get("LLM_PROMPT_TOOLS", "").split(",") if m.strip()}
 
 _TOOLS_UNSUPPORTED_ROUTES: set[tuple[str, str]] = set()
 _THINKING_TOOLS_CONFLICT: set[tuple[str, str]] = set()
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_TOOL_TAG_RE = re.compile(r"<tool_call\b.*?</tool_call>", re.DOTALL)
 
 if not PERSONA and PERSONA_FILE:
     try:
@@ -807,13 +811,22 @@ async def execute_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[st
 
 
 def _prompt_tools_block(tools: list[dict[str, Any]]) -> str:
-    lines = ["You have the following tools available. To call a tool, output EXACTLY this format (no markdown, no extra text around it):",
-             "<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}</tool_call>",
-             "",
-             "After you receive the tool result, continue your response to the user.",
-             "You may call multiple tools in sequence if needed. Only call a tool when it is genuinely useful.",
-             "",
-             "Available tools:"]
+    lines = [
+        "TOOL CALLING PROTOCOL (strict):",
+        "",
+        "You have tools available. When you decide to use one, your ENTIRE reply must be",
+        "one single-line <tool_call> block and nothing else. Exact format:",
+        "",
+        "<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}</tool_call>",
+        "",
+        "Rules:",
+        "- The block must be valid JSON containing a \"name\" string and an \"arguments\" object.",
+        "- Do NOT wrap it in markdown code fences; do NOT add any text before or after the block.",
+        "- Do NOT emit <tool_call> when you do not need a tool; just answer the user normally.",
+        "- After you receive the tool result, continue and answer the user normally.",
+        "",
+        "Available tools:",
+    ]
     for t in tools:
         fn = t.get("function") or t
         name = fn.get("name", "")
@@ -836,6 +849,59 @@ def _prompt_tools_block(tools: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _extract_balanced_json(text: str, start: int) -> str | None:
+    """从 start 位置提取第一个花括号平衡的 JSON 片段(字符串感知,兼容嵌套)。"""
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _extract_tool_calls(text: str) -> list[dict[str, Any]]:
+    """从模型输出中提取所有 <tool_call> JSON 调用,兼容嵌套参数与多标签。"""
+    calls: list[dict[str, Any]] = []
+    pos = 0
+    while True:
+        idx = text.find("<tool_call", pos)
+        if idx < 0:
+            break
+        pos = idx + len("<tool_call")
+        brace = text.find("{", idx)
+        if brace < 0:
+            continue
+        end_tag = text.find("</tool_call>", idx)
+        if end_tag != -1 and brace > end_tag:
+            continue  # 标签不完整,忽略
+        payload = _extract_balanced_json(text, brace)
+        if payload is None:
+            continue
+        try:
+            call = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(call, dict) and str(call.get("name") or "").strip():
+            calls.append(call)
+    return calls
+
+
 async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_rounds: int = 8) -> dict[str, Any]:
     system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
     if system_msg:
@@ -844,36 +910,45 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
         messages.insert(0, {"role": "system", "content": _prompt_tools_block(tools)})
     last_out: dict[str, Any] = {"text": "", "usage": {}}
     tool_calls_collected: list[dict[str, Any]] = []
+    nudged = False
     for _ in range(max_rounds):
         out = await complete_chat(route, messages)
-        text = out.get("text") or ""
         last_out = out
-        matches = list(_TOOL_CALL_RE.finditer(text))
-        if not matches:
-            print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, text_preview={text[:150]!r}")
+        text = out.get("text") or ""
+        calls = _extract_tool_calls(text)
+        if not calls:
+            if not nudged:
+                # 模型没按协议输出:追加一次强制提示,再给它一次机会
+                nudged = True
+                print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, nudging once, text_preview={text[:150]!r}")
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "user", "content":
+                    "You did not emit a <tool_call> block. If you need information from a tool, "
+                    "reply with ONLY a valid <tool_call>{...}</tool_call> block and nothing else. "
+                    "If you really do not need any tool, just answer the user directly."})
+                continue
+            print(f"[api_loop:_prompt_tool_loop] still no <tool_call> after nudge, giving up, text_preview={text[:150]!r}")
             break
-        for m in matches:
+        result_msgs: list[dict[str, Any]] = []
+        for call in calls:
+            tool_name = str(call.get("name") or "")
+            tool_args = call.get("arguments") or {}
+            if not isinstance(tool_args, dict):
+                tool_args = {}
             try:
-                call = json.loads(m.group(1))
-                tool_name = str(call.get("name") or "")
-                tool_args = call.get("arguments") or {}
-                if not isinstance(tool_args, dict):
-                    tool_args = {}
                 result = await execute_mcp_tool(tool_name, tool_args)
                 result_str = json.dumps(result, ensure_ascii=False)
                 tool_calls_collected.append({"name": tool_name, "input": tool_args, "result": result})
             except Exception as exc:
                 result_str = json.dumps({"error": str(exc)}, ensure_ascii=False)
                 tool_calls_collected.append({"name": tool_name, "input": tool_args, "result": {"error": str(exc)}})
-            messages.append({"role": "assistant", "content": text})
-            messages.append({"role": "user", "content": f"<tool_result name=\"{tool_name}\">{result_str}</tool_result>"})
-            text = ""
-        if not text:
-            continue
+            result_msgs.append({"role": "user", "content": f"<tool_result name=\"{tool_name}\">{result_str}</tool_result>"})
+        messages.append({"role": "assistant", "content": text})
+        messages.extend(result_msgs)
     final_text = (last_out.get("text") or "")
-    final_text = _TOOL_CALL_RE.sub("", final_text).strip()
-    if final_text != last_out.get("text"):
-        last_out["text"] = final_text
+    cleaned = _TOOL_TAG_RE.sub("", final_text).strip()
+    if cleaned != final_text:
+        last_out["text"] = cleaned
     if tool_calls_collected:
         last_out["tool_calls"] = tool_calls_collected
     return last_out
@@ -887,7 +962,12 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
         try:
             all_tools = await mcp_tools()
             route_key = (route.get("url", "").rstrip("/"), route.get("model", ""))
-            use_prompt_tools = (route_key in _TOOLS_UNSUPPORTED_ROUTES and bool(all_tools)) if not FORCE_NATIVE_TOOLS else False
+            if bool(all_tools) and route.get("model") in PROMPT_TOOLS_FORCE:
+                use_prompt_tools = True      # 显式强制:该模型走提示词工具协议
+            elif FORCE_NATIVE_TOOLS:
+                use_prompt_tools = False     # 显式强制:一律走原生 tools 参数
+            else:
+                use_prompt_tools = route_key in _TOOLS_UNSUPPORTED_ROUTES and bool(all_tools)
             native_tools = [] if use_prompt_tools else all_tools
             suppress_thinking = (route_key in _THINKING_TOOLS_CONFLICT and bool(native_tools) and thinking_budget() > 0)
             tool_names = [t.get("function", {}).get("name", "") for t in native_tools] if native_tools else []
