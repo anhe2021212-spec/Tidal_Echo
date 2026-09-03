@@ -724,6 +724,7 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
     tool_calls_buf: list[dict[str, Any]] = []
     usage: dict[str, Any] = {}
     raw_msg: dict[str, Any] = {}
+    raw_samples: list[str] = []
 
     body_keys = [k for k in body if k not in ("messages",)]
     body_summary = {k: (body[k] if k != "tools" else f"[{len(body[k])} tools]") for k in body_keys}
@@ -757,6 +758,8 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
                     ev = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if tools and len(raw_samples) < 3:
+                    raw_samples.append(data_str[:200])
                 n = normalize_stream_event(ev)
                 if n["usage"]:
                     usage = n["usage"]
@@ -774,6 +777,9 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
     merged_thinking = merge_thinking(thinking_parts)
 
     tool_calls_parsed, raw_tool_calls = finalize_tool_calls(tool_calls_buf)
+
+    if tools and not tool_calls_buf:
+        print(f"[api_loop:complete_chat] tools passed but no tool calls parsed, raw_stream_samples={raw_samples}")
 
     final_text = "".join(text_parts).strip()
     if "role" not in raw_msg:
@@ -916,26 +922,34 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                         calls = msg.get("tool_calls") or []
                         if not calls and isinstance(msg.get("function_call"), dict):
                             calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
-                        # 静默冲突：thinking 已启用 + 传了原生工具，但本轮既没思考也没调用工具。
-                        # 部分中转端在思考模式下会静默丢弃 tools（不报 400，直接回正文），
-                        # 探测到后标记该路由，并在本轮及后续轮次改用「关闭思考」重试。
+                        # 原生工具静默失效探测:传了工具的模型既没思考也没调用工具。
+                        # 1) 思考模式与工具冲突时,中转端会静默丢弃 tools(不报 400,直接回正文)
+                        #    → 标记冲突并改用「关闭思考」重试;
+                        # 2) 关闭思考后仍无工具调用 → 该中转端不认原生 tools
+                        #    → 标记为不支持并改走提示词工具模式(<tool_call> 文本协议)。
                         if (
                             round_idx == 0
                             and not calls
                             and not out.get("thinking")
                             and native_tools
-                            and thinking_budget() > 0
-                            and not suppress
                         ):
-                            print(f"[api_loop:run_model] silent thinking+tools conflict, retrying without thinking: {route_key}")
-                            _THINKING_TOOLS_CONFLICT.add(route_key)
-                            suppress = True
-                            messages = base_messages[:]
-                            out = await complete_chat(route, messages, native_tools, disable_thinking=True)
-                            msg = out.get("message") or {}
-                            calls = msg.get("tool_calls") or []
-                            if not calls and isinstance(msg.get("function_call"), dict):
-                                calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
+                            if thinking_budget() > 0 and not suppress:
+                                print(f"[api_loop:run_model] silent thinking+tools conflict, retrying without thinking: {route_key}")
+                                _THINKING_TOOLS_CONFLICT.add(route_key)
+                                suppress = True
+                                messages = base_messages[:]
+                                out = await complete_chat(route, messages, native_tools, disable_thinking=True)
+                                msg = out.get("message") or {}
+                                calls = msg.get("tool_calls") or []
+                                if not calls and isinstance(msg.get("function_call"), dict):
+                                    calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
+                            if not calls:
+                                print(f"[api_loop:run_model] native tools silently dropped by relay, switching to prompt tools: {route_key}")
+                                _TOOLS_UNSUPPORTED_ROUTES.add(route_key)
+                                try:
+                                    out = await _prompt_tool_loop(route, base_messages, all_tools)
+                                except Exception:
+                                    out = await complete_chat(route, base_messages)
                         if not calls:
                             break
                         messages.append(msg)
