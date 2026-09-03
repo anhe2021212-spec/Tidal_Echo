@@ -1265,6 +1265,24 @@
     width:15px; height:15px; flex:none;
     accent-color: var(--slider-thumb);
   }
+  .inject-entry{
+    border:1px solid var(--card-line);
+    border-radius:14px; padding:10px 12px; margin:6px 0;
+    background: var(--card-bg);
+  }
+  .inject-entry-head{
+    display:flex; align-items:center; gap:8px; margin-bottom:7px;
+  }
+  .inject-entry-title{
+    flex:1; min-width:0; padding:8px 10px; border-radius:10px;
+    border:1px solid var(--field-line); background:var(--field-bg);
+    color:var(--text); font:inherit; font-size:13px; outline:none;
+  }
+  .inject-entry-del{
+    flex:none; border:none; background:transparent; color:var(--text-soft);
+    font-size:12px; padding:6px 8px; cursor:pointer;
+  }
+  .inject-entry-del:hover{ color:var(--text); }
 
   /* action rows */
   .action-row{
@@ -2178,6 +2196,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
             <span class="config-entry-copy"><strong>模型参数</strong><span id="modelParamsEntryStatus">温度·上下文·Token·思考</span></span>
           </button>
+          <button class="config-entry" id="openInjectConfigBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+            <span class="config-entry-copy"><strong>指令注入</strong><span id="injectEntryStatus">开关控制 · 规则条目</span></span>
+          </button>
         </div>
       </section>
 
@@ -2262,6 +2284,22 @@
         </div>
         <div class="config-actions"><button class="config-action primary" id="modelParamsSaveBtn" type="button">保存参数</button></div>
         <div class="push-hint" id="modelParamsConfigHint">调完点「保存参数」，对之后的新消息生效</div>
+      </section>
+
+      <section class="settings-card config-view" id="injectConfigView">
+        <div class="config-view-head"><button class="config-view-back" data-config-back type="button" aria-label="返回连接与工具">‹</button><div class="config-view-title"><strong>指令注入</strong><span>开启后把规则条目注入每次模型请求</span></div></div>
+        <div class="config-fields">
+          <div class="config-field-label">总开关 <i class="info-i" title="开启后，下方所有条目会随每次消息一起注入模型的 system 指令；关闭则不注入（条目保留，可随时再开）。">i</i></div>
+          <label class="param-auto-row">
+            <input id="injectEnabledInput" type="checkbox">
+            <span>注入开启（保存后，对之后的新消息生效）</span>
+          </label>
+          <div class="config-field-label">规则条目 <i class="info-i" title="标题可选、内容必填；多条全部注入。适合放常驻规则、背景设定、格式要求等。">i</i></div>
+          <div id="injectEntriesList"></div>
+          <button class="config-action ghost" id="injectAddBtn" type="button">＋ 添加条目</button>
+        </div>
+        <div class="config-actions"><button class="config-action primary" id="injectSaveBtn" type="button">保存注入包</button></div>
+        <div class="push-hint" id="injectConfigHint"></div>
       </section>
 
       <!-- / 上下文阈值假按键已移除 -->
@@ -2511,6 +2549,7 @@ const openApiConfigBtn = $("#openApiConfigBtn"), openMcpConfigBtn = $("#openMcpC
 const personaConfigView = $("#personaConfigView"), modelParamsConfigView = $("#modelParamsConfigView");
 const personaInput = $("#personaInput"), aiNameInput = $("#aiNameInput"), personaSaveBtn = $("#personaSaveBtn"), personaConfigHint = $("#personaConfigHint");
 const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
+const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
 let editingMcpIndex = null;
 
 /* ════════ 固定聊天背景 + 本地头像 ════════ */
@@ -3417,6 +3456,50 @@ function applyMaxTokensConfig(value){
     setParamSlider(maxTokensInput, value, "2000");
   }
 }
+function injectEntryElement(entry){
+  const box = document.createElement("div");
+  box.className = "inject-entry";
+  const head = document.createElement("div");
+  head.className = "inject-entry-head";
+  const title = document.createElement("input");
+  title.type = "text";
+  title.className = "inject-entry-title";
+  title.placeholder = "条目标题（可选）";
+  title.value = (entry && entry.title) || "";
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "inject-entry-del";
+  del.textContent = "删除";
+  del.addEventListener("click", () => box.remove());
+  head.append(title, del);
+  const content = document.createElement("textarea");
+  content.className = "config-textarea";
+  content.rows = 3;
+  content.placeholder = "把要注入的规则 / 背景设定 / 格式要求贴在这里…";
+  content.value = (entry && entry.content) || "";
+  box.append(head, content);
+  return box;
+}
+function renderInjectEntries(entries){
+  if (!injectEntriesList) return;
+  injectEntriesList.textContent = "";
+  (entries || []).forEach(entry => injectEntriesList.appendChild(injectEntryElement(entry)));
+}
+function updateInjectEntryStatus(enabled, count){
+  if (!injectEntryStatus) return;
+  injectEntryStatus.textContent = enabled ? `开启 · ${count} 条` : "关闭";
+}
+async function loadInjectConfig(){
+  try{
+    const r = await fetch(`${API_BASE}/app/loop_config`, { headers: authHeaders() });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    const inj = cfg.injections || {};
+    if (injectEnabledInput) injectEnabledInput.checked = !!inj.enabled;
+    renderInjectEntries(inj.entries || []);
+    updateInjectEntryStatus(!!inj.enabled, (inj.entries || []).length);
+  }catch{}
+}
 initParamSliders();
 
 async function loadBrain(){
@@ -3454,6 +3537,7 @@ function setConfigView(view){
   mcpConfigView.classList.toggle("active", view === "mcp");
   if (personaConfigView) personaConfigView.classList.toggle("active", view === "persona");
   if (modelParamsConfigView) modelParamsConfigView.classList.toggle("active", view === "model-params");
+  if (injectConfigView) injectConfigView.classList.toggle("active", view === "inject");
 }
 function resetMcpForm(){
   editingMcpIndex = null;
@@ -3777,6 +3861,28 @@ async function loadModelParamsConfig(){
 }
 $("#openPersonaConfigBtn")?.addEventListener("click", () => { setConfigView("persona"); loadPersonaConfig(); });
 $("#openModelParamsBtn")?.addEventListener("click", () => { setConfigView("model-params"); loadModelParamsConfig(); });
+openInjectConfigBtn?.addEventListener("click", () => { setConfigView("inject"); loadInjectConfig(); });
+injectAddBtn?.addEventListener("click", () => {
+  if (!injectEntriesList) return;
+  const el = injectEntryElement({});
+  injectEntriesList.appendChild(el);
+  const t = el.querySelector(".inject-entry-title");
+  if (t) t.focus();
+});
+injectSaveBtn?.addEventListener("click", async () => {
+  const hint = injectConfigHint;
+  const enabled = !!injectEnabledInput?.checked;
+  const entries = [];
+  if (injectEntriesList){
+    injectEntriesList.querySelectorAll(".inject-entry").forEach(box => {
+      const title = box.querySelector(".inject-entry-title")?.value?.trim() || "";
+      const content = box.querySelector("textarea")?.value?.trim() || "";
+      if (title || content) entries.push({ title, content });
+    });
+  }
+  const ok = await saveLoopConfig({ injections: { enabled, entries } }, hint);
+  if (ok) updateInjectEntryStatus(enabled, entries.length);
+});
 $("#personaSaveBtn")?.addEventListener("click", async () => {
   const hint = personaConfigHint;
   const persona = (personaInput?.value || "").trim();

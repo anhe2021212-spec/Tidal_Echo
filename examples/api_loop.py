@@ -166,6 +166,28 @@ def ai_name() -> str:
     cfg = load_config()
     return str(cfg.get("ai_name") or "").strip()
 
+def injections() -> tuple[bool, list[dict[str, str]]]:
+    """(注入是否生效, 条目列表) — 用户手动维护的「指令注入包」。
+
+    总开关开启且至少有一条有内容的条目时，注入到每次请求的 system 提示里。
+    条目格式: [{"title": 可选标题, "content": 必填内容}, ...]
+    """
+    cfg = load_config()
+    inj = cfg.get("injections")
+    if not isinstance(inj, dict):
+        return False, []
+    rows: list[dict[str, str]] = []
+    for e in (inj.get("entries") or []):
+        if not isinstance(e, dict):
+            continue
+        content = str(e.get("content") or "").strip()
+        if not content:
+            continue
+        rows.append({"title": str(e.get("title") or "").strip(), "content": content})
+    if not bool(inj.get("enabled")) or not rows:
+        return False, rows
+    return True, rows
+
 def temperature() -> float:
     try:
         return float(load_config().get("temperature", TEMPERATURE))
@@ -292,7 +314,18 @@ def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[
 
 def build_messages(text: str, *, before_id: int | None = None, session_id: str = "", use_context: bool = True) -> list[dict[str, str]]:
     tool_hint = " When a configured MCP tool can provide current, external, or actionable information, use it before answering."
-    messages = [{"role": "system", "content": persona() + tool_hint}]
+    system_text = persona() + tool_hint
+    inj_on, inj_rows = injections()
+    if inj_on and inj_rows:
+        blocks: list[str] = []
+        for r in inj_rows:
+            head = f"【{r['title']}】\n" if r["title"] else ""
+            blocks.append((head + r["content"]).strip())
+        system_text += (
+            "\n\nThe following user-injected rules are currently active and must be followed:\n\n"
+            + "\n\n".join(blocks)
+        )
+    messages = [{"role": "system", "content": system_text}]
     if use_context:
         for row in relay_rows(before_id, session_id, history_n()):
             content = str(row.get("text") or "").strip()
@@ -325,6 +358,7 @@ def public_config() -> dict[str, Any]:
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
+        "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "active_session": active_session_id(),
         "sessions": session_rows(),
         "main_chain": [
@@ -376,6 +410,18 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
             cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
         except Exception:
             pass
+    if "injections" in body:
+        inj = body.get("injections")
+        if isinstance(inj, dict):
+            entries: list[dict[str, str]] = []
+            for e in (inj.get("entries") or []):
+                if not isinstance(e, dict):
+                    continue
+                title = str(e.get("title") or "").strip()
+                content = str(e.get("content") or "").strip()
+                if title or content:
+                    entries.append({"title": title, "content": content})
+            cfg["injections"] = {"enabled": bool(inj.get("enabled")), "entries": entries}
     if isinstance(body.get("main_chain"), list):
         old = main_chain()
         new_chain = []
