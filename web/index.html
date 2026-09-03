@@ -1224,31 +1224,34 @@
     box-shadow: var(--seg-thumb-shadow); font-weight:500;
   }
 
-  /* context slider */
-  .context-slider-wrap{ padding:4px 2px 2px; }
-  .context-slider{
+  /* param sliders（模型参数控制条） */
+  .param-slider-row{
+    display:flex; align-items:center; gap:12px;
+    padding:2px 2px 4px;
+  }
+  .param-slider{
     -webkit-appearance:none; appearance:none;
-    width:100%; height:4px; border-radius:999px;
+    flex:1; height:4px; border-radius:999px;
     background: var(--slider-track);
     outline:none; cursor:pointer; margin:6px 0;
   }
-  .context-slider::-webkit-slider-thumb{
+  .param-slider::-webkit-slider-thumb{
     -webkit-appearance:none; appearance:none;
     width:21px; height:21px; border-radius:50%;
     background: var(--slider-thumb);
     border:2.5px solid var(--card-bg);
     box-shadow: 0 3px 10px rgba(24,46,67,.26); cursor:pointer;
   }
-  .context-slider::-moz-range-thumb{
+  .param-slider::-moz-range-thumb{
     width:21px; height:21px; border-radius:50%;
     background: var(--slider-thumb);
     border:2.5px solid var(--card-bg);
     box-shadow: 0 3px 10px rgba(24,46,67,.26); cursor:pointer;
   }
-  .context-scale{
-    display:flex; justify-content:space-between; margin-top:9px;
-    color: var(--text-faint);
-    font-family: var(--font-en), var(--font-cn); font-size:11.5px;
+  .param-val{
+    min-width:56px; text-align:right;
+    font-family: var(--font-en), var(--font-cn); font-size:12.5px;
+    color: var(--text-soft); font-variant-numeric: tabular-nums;
   }
 
   /* action rows */
@@ -2216,28 +2219,36 @@
         <div class="config-view-head"><button class="config-view-back" data-config-back type="button" aria-label="返回连接与工具">‹</button><div class="config-view-title"><strong>模型参数</strong><span>调节生成行为</span></div></div>
         <div class="config-fields" id="modelParamsFields">
           <div class="config-field-label">Temperature <i class="info-i" title="越高越随机，越低越确定。推荐 0.7">i</i></div>
-          <input id="temperatureInput" type="number" min="0" max="2" step="0.05" placeholder="0.7" autocomplete="off">
+          <div class="param-slider-row">
+            <input id="temperatureInput" class="param-slider" type="range" min="0" max="2" step="0.05" value="0.7" aria-label="Temperature">
+            <span class="param-val" id="temperatureVal">0.7</span>
+          </div>
           <div class="config-field-label">Top P <i class="info-i" title="核采样概率，通常与 temperature 二选一调节。推荐 1.0">i</i></div>
-          <input id="topPInput" type="number" min="0" max="1" step="0.05" placeholder="1.0" autocomplete="off">
+          <div class="param-slider-row">
+            <input id="topPInput" class="param-slider" type="range" min="0" max="1" step="0.05" value="1.0" aria-label="Top P">
+            <span class="param-val" id="topPVal">1.0</span>
+          </div>
           <div class="config-field-label">上下文消息数量 <i class="info-i" title="每次请求携带多少条历史消息（含双方）">i</i></div>
-          <input id="historyNInput" type="number" min="0" max="200" step="1" placeholder="24" autocomplete="off">
+          <div class="param-slider-row">
+            <input id="historyNInput" class="param-slider" type="range" min="0" max="200" step="1" value="24" aria-label="上下文消息数量">
+            <span class="param-val" id="historyNVal">24</span>
+          </div>
           <div class="config-field-label">最大 Token 数 <i class="info-i" title="单次回复最多生成多少 token">i</i></div>
-          <input id="maxTokensInput" type="number" min="100" max="32000" step="100" placeholder="2000" autocomplete="off">
+          <div class="param-slider-row">
+            <input id="maxTokensInput" class="param-slider" type="range" min="100" max="32000" step="100" value="2000" aria-label="最大 Token 数">
+            <span class="param-val" id="maxTokensVal">2000</span>
+          </div>
           <div class="config-field-label">思考预算（Thinking Budget）<i class="info-i" title="Anthropic extended thinking 模式下，给模型的思考 token 预算。0 表示关闭。">i</i></div>
-          <input id="thinkingBudgetInput" type="number" min="0" max="32000" step="500" placeholder="0（关闭）" autocomplete="off">
+          <div class="param-slider-row">
+            <input id="thinkingBudgetInput" class="param-slider" type="range" min="0" max="32000" step="500" value="0" aria-label="思考预算">
+            <span class="param-val" id="thinkingBudgetVal">0</span>
+          </div>
         </div>
         <div class="config-actions"><button class="config-action primary" id="modelParamsSaveBtn" type="button">保存参数</button></div>
         <div class="push-hint" id="modelParamsConfigHint"></div>
       </section>
 
-      <!-- 上下文阈值（占位 · 假按键）-->
-      <section class="settings-card">
-        <div class="settings-label">上下文阈值 <i class="info-i" title="上下文阈值：保留多少 / 满多少触发">i</i></div>
-        <div class="context-slider-wrap">
-          <input class="context-slider" id="contextSlider" type="range" min="0" max="100" value="40" aria-label="上下文阈值">
-          <div class="context-scale"><span>保留60k</span><span>满200k触发</span></div>
-        </div>
-      </section>
+      <!-- / 上下文阈值假按键已移除 -->
 
 
     </div>
@@ -2472,7 +2483,6 @@ const peerNameEl = $("#peerName"), profilePanel = $("#profilePanel");
 const profileClose = $("#profileClose"), moreBtn = $("#moreBtn");
 const profileAvatarBtn = $("#profileAvatarBtn"), profileNameEl = $("#profileName");
 const profileNameInput = $("#profileNameInput"), profileNameEdit = $("#profileNameEdit");
-const contextSlider = $("#contextSlider");
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
 const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn");
@@ -3358,11 +3368,21 @@ function setBrainUi(target){
     : "现在由 Claude Code channel 接消息";
 }
 
-if (contextSlider){
-  const savedContext = localStorage.getItem("companion_pick_context");
-  if (savedContext !== null && savedContext !== "") contextSlider.value = savedContext;
-  contextSlider.addEventListener("input", () => { try{ localStorage.setItem("companion_pick_context", contextSlider.value); }catch(_){} });
+function initParamSliders(){
+  document.querySelectorAll("#modelParamsFields input.param-slider").forEach(sl => {
+    sl.addEventListener("input", () => {
+      const valEl = document.getElementById(sl.id + "Val");
+      if (valEl) valEl.textContent = sl.value;
+    });
+  });
 }
+function setParamSlider(el, value, fallback){
+  if (!el) return;
+  el.value = (value != null && value !== "") ? value : fallback;
+  const valEl = document.getElementById(el.id + "Val");
+  if (valEl) valEl.textContent = el.value;
+}
+initParamSliders();
 
 async function loadBrain(){
   if (USE_MOCK || !secret){ setBrainUi("desktop"); return; }
@@ -3660,11 +3680,11 @@ async function loadLoopConfig(){
     if (personaInput) personaInput.value = savedLoopConfig.persona || "";
     if (aiNameInput) aiNameInput.value = savedLoopConfig.ai_name || "";
     
-    if (temperatureInput) temperatureInput.value = savedLoopConfig.temperature != null ? savedLoopConfig.temperature : "";
-    if (topPInput) topPInput.value = savedLoopConfig.top_p != null ? savedLoopConfig.top_p : "";
-    if (historyNInput) historyNInput.value = savedLoopConfig.history_n != null ? savedLoopConfig.history_n : "";
-    if (maxTokensInput) maxTokensInput.value = savedLoopConfig.max_tokens != null ? savedLoopConfig.max_tokens : "";
-    if (thinkingBudgetInput) thinkingBudgetInput.value = savedLoopConfig.thinking_budget != null ? savedLoopConfig.thinking_budget : "";
+    setParamSlider(temperatureInput, savedLoopConfig.temperature, "0.7");
+    setParamSlider(topPInput, savedLoopConfig.top_p, "1.0");
+    setParamSlider(historyNInput, savedLoopConfig.history_n, "24");
+    setParamSlider(maxTokensInput, savedLoopConfig.max_tokens, "2000");
+    setParamSlider(thinkingBudgetInput, savedLoopConfig.thinking_budget, "0");
     
     resetMcpForm();
     renderApiList();
@@ -3713,13 +3733,11 @@ async function loadModelParamsConfig(){
     const r = await fetch(`${API_BASE}/app/config`, { headers: authHeaders() });
     if (!r.ok) return;
     const cfg = await r.json();
-    const temp = $("#temperatureInput"), topp = $("#topPInput"), hist = $("#historyNInput"),
-          maxt = $("#maxTokensInput"), think = $("#thinkingBudgetInput");
-    if (temp) temp.value = cfg.temperature ?? "";
-    if (topp) topp.value = cfg.top_p ?? "";
-    if (hist) hist.value = cfg.history_n ?? "";
-    if (maxt) maxt.value = cfg.max_tokens ?? "";
-    if (think) think.value = cfg.thinking_budget ?? "";
+    setParamSlider($("#temperatureInput"), cfg.temperature, "0.7");
+    setParamSlider($("#topPInput"), cfg.top_p, "1.0");
+    setParamSlider($("#historyNInput"), cfg.history_n, "24");
+    setParamSlider($("#maxTokensInput"), cfg.max_tokens, "2000");
+    setParamSlider($("#thinkingBudgetInput"), cfg.thinking_budget, "0");
   }catch{}
 }
 $("#openPersonaConfigBtn")?.addEventListener("click", () => { setConfigView("persona"); loadPersonaConfig(); });
