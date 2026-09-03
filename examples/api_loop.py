@@ -182,9 +182,13 @@ def top_p() -> float | None:
     except Exception:
         return None
 
-def max_tokens() -> int:
+def max_tokens() -> int | None:
+    """None = 不传 max_tokens，跟随当前模型的默认输出上限(长文本/MCP 场景推荐)。"""
     try:
-        return max(100, int(load_config().get("max_tokens", MAX_TOKENS)))
+        v = load_config().get("max_tokens", MAX_TOKENS)
+        if v is None or v == "":
+            return None
+        return max(100, min(131072, int(v)))
     except Exception:
         return MAX_TOKENS
 
@@ -359,10 +363,14 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     if "max_tokens" in body:
-        try:
-            cfg["max_tokens"] = max(100, min(32768, int(body["max_tokens"])))
-        except Exception:
-            pass
+        v = body.get("max_tokens")
+        if v is None or v == "":
+            cfg["max_tokens"] = None  # 自动：不传参数，跟随模型默认上限
+        else:
+            try:
+                cfg["max_tokens"] = max(100, min(131072, int(v)))
+            except Exception:
+                pass
     if "thinking_budget" in body:
         try:
             cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
@@ -547,9 +555,11 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
         "model": route["model"],
         "messages": messages,
         "temperature": temperature(),
-        "max_tokens": max_tokens(),
         "stream": True,
     }
+    mt = max_tokens()
+    if mt is not None:
+        body["max_tokens"] = mt
     tp = top_p()
     if tp is not None:
         body["top_p"] = tp
@@ -706,9 +716,11 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
         "model": route["model"],
         "messages": messages,
         "temperature": temperature(),
-        "max_tokens": max_tokens(),
         "stream": True,
     }
+    mt = max_tokens()
+    if mt is not None:
+        body["max_tokens"] = mt
     tp = top_p()
     if tp is not None:
         body["top_p"] = tp

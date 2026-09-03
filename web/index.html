@@ -1253,6 +1253,18 @@
     font-family: var(--font-en), var(--font-cn); font-size:12.5px;
     color: var(--text-soft); font-variant-numeric: tabular-nums;
   }
+  .param-slider:disabled{
+    opacity:.45; cursor:not-allowed;
+  }
+  .param-auto-row{
+    display:flex; align-items:center; gap:8px;
+    font-size:12px; color:var(--text-soft);
+    padding:4px 2px 6px; cursor:pointer;
+  }
+  .param-auto-row input{
+    width:15px; height:15px; flex:none;
+    accent-color: var(--slider-thumb);
+  }
 
   /* action rows */
   .action-row{
@@ -2233,11 +2245,15 @@
             <input id="historyNInput" class="param-slider" type="range" min="0" max="100" step="1" value="24" aria-label="上下文消息数量" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
             <span class="param-val" id="historyNInputVal">24</span>
           </div>
-          <div class="config-field-label">最大 Token 数 <i class="info-i" title="单次回复最多生成多少 token">i</i></div>
+          <div class="config-field-label">最大 Token 数 <i class="info-i" title="单次回复最多生成多少 token。勾选「自动」则不传该参数，跟随当前模型的默认上限。">i</i></div>
           <div class="param-slider-row">
-            <input id="maxTokensInput" class="param-slider" type="range" min="512" max="32768" step="512" value="2000" aria-label="最大 Token 数" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <input id="maxTokensInput" class="param-slider" type="range" min="512" max="131072" step="1024" value="2000" aria-label="最大 Token 数" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
             <span class="param-val" id="maxTokensInputVal">2000</span>
           </div>
+          <label class="param-auto-row">
+            <input id="maxTokensAutoInput" type="checkbox" onchange="syncMaxTokensAuto(this)">
+            <span>自动：不填数值，跟随当前模型默认上限（长文本 / MCP 调用推荐）</span>
+          </label>
           <div class="config-field-label">思考预算（Thinking Budget）<i class="info-i" title="Anthropic extended thinking 模式下，给模型的思考 token 预算。0 表示关闭。">i</i></div>
           <div class="param-slider-row">
             <input id="thinkingBudgetInput" class="param-slider" type="range" min="0" max="32768" step="1024" value="0" aria-label="思考预算" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
@@ -2494,7 +2510,7 @@ const configHubView = $("#configHubView"), apiConfigView = $("#apiConfigView"), 
 const openApiConfigBtn = $("#openApiConfigBtn"), openMcpConfigBtn = $("#openMcpConfigBtn"), apiEntryStatus = $("#apiEntryStatus"), mcpEntryStatus = $("#mcpEntryStatus");
 const personaConfigView = $("#personaConfigView"), modelParamsConfigView = $("#modelParamsConfigView");
 const personaInput = $("#personaInput"), aiNameInput = $("#aiNameInput"), personaSaveBtn = $("#personaSaveBtn"), personaConfigHint = $("#personaConfigHint");
-const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
+const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
 let editingMcpIndex = null;
 
 /* ════════ 固定聊天背景 + 本地头像 ════════ */
@@ -3382,6 +3398,25 @@ function setParamSlider(el, value, fallback){
   el.value = (value != null && value !== "") ? value : fallback;
   syncParamVal(el);
 }
+function syncMaxTokensAuto(chk){
+  if (!maxTokensInput) return;
+  const auto = chk.checked;
+  maxTokensInput.disabled = auto;
+  const valEl = document.getElementById("maxTokensInputVal");
+  if (valEl) valEl.textContent = auto ? "自动" : maxTokensInput.value;
+}
+function applyMaxTokensConfig(value){
+  const auto = value == null || value === "";
+  if (maxTokensAutoCheck) maxTokensAutoCheck.checked = auto;
+  if (!maxTokensInput) return;
+  maxTokensInput.disabled = auto;
+  if (auto){
+    const valEl = document.getElementById("maxTokensInputVal");
+    if (valEl) valEl.textContent = "自动";
+  } else {
+    setParamSlider(maxTokensInput, value, "2000");
+  }
+}
 initParamSliders();
 
 async function loadBrain(){
@@ -3683,7 +3718,7 @@ async function loadLoopConfig(){
     setParamSlider(temperatureInput, savedLoopConfig.temperature, "0.7");
     setParamSlider(topPInput, savedLoopConfig.top_p, "1.0");
     setParamSlider(historyNInput, savedLoopConfig.history_n, "24");
-    setParamSlider(maxTokensInput, savedLoopConfig.max_tokens, "2000");
+    applyMaxTokensConfig(savedLoopConfig.max_tokens);
     setParamSlider(thinkingBudgetInput, savedLoopConfig.thinking_budget, "0");
     
     resetMcpForm();
@@ -3736,7 +3771,7 @@ async function loadModelParamsConfig(){
     setParamSlider($("#temperatureInput"), cfg.temperature, "0.7");
     setParamSlider($("#topPInput"), cfg.top_p, "1.0");
     setParamSlider($("#historyNInput"), cfg.history_n, "24");
-    setParamSlider($("#maxTokensInput"), cfg.max_tokens, "2000");
+    applyMaxTokensConfig(cfg.max_tokens);
     setParamSlider($("#thinkingBudgetInput"), cfg.thinking_budget, "0");
   }catch{}
 }
@@ -3763,7 +3798,8 @@ $("#modelParamsSaveBtn")?.addEventListener("click", async () => {
   if (!isNaN(tempVal)) payload.temperature = tempVal;
   if (!isNaN(toppVal)) payload.top_p = toppVal;
   if (!isNaN(histVal)) payload.history_n = histVal;
-  if (!isNaN(maxtVal)) payload.max_tokens = maxtVal;
+  if (maxTokensAutoCheck?.checked) payload.max_tokens = null;
+  else if (!isNaN(maxtVal)) payload.max_tokens = maxtVal;
   if (!isNaN(thinkVal)) payload.thinking_budget = thinkVal;
   await saveLoopConfig(payload, hint);
 });
