@@ -931,6 +931,14 @@
   @keyframes send-go{ from{ transform: scale(.96); } to{ transform: scale(1); } }
   .floatbtn.send.send-go{ animation: send-go .22s cubic-bezier(.2,.8,.2,1); }
   @media (prefers-reduced-motion: reduce){ .floatbtn.send.send-go{ animation: none; } }
+  .floatbtn.stop{
+    background: var(--send-bg);
+    color:#ffffff;
+    box-shadow: 0 16px 32px rgba(41, 60, 78, 0.22);
+  }
+  .floatbtn.stop:hover{ color:#ffffff; }
+  .floatbtn.stop:active{ transform: scale(.97); }
+  .floatbtn.stop svg{ width: clamp(17px, 2.4vw, 22px); height: clamp(17px, 2.4vw, 22px); }
   .composer .field{
     flex:1 1 auto; display:flex; align-items:center; gap: clamp(4px, 0.8vw, 10px);
     background: var(--field-bg);
@@ -2003,7 +2011,94 @@
   .msg-act:hover{ background:var(--row-press); }
   .msg-act:active{ background:var(--row-press); transform:scale(.98); }
   .msg-act svg{ width:18px; height:18px; opacity:.82; flex:0 0 auto; }
-  .msg-act.danger{ color:#e05a4d; }                       /* 删除(仅本地) */
+  .msg-act.danger{ color:#e05a4d; }                       /* 删除(本地 + 服务器) */
+
+  /* ── 多选消息模式:气泡旁的勾选圈 + 底部工具条 ── */
+  .app.selecting .composer{ opacity:0; pointer-events:none; }
+  .app.selecting .row{ cursor:pointer; }
+  .sel-check{
+    flex:none; align-self:center; width:22px; height:22px; margin:0 8px; border-radius:50%;
+    border:1.6px solid rgba(120,132,146,.58); background:transparent; position:relative;
+    transition: background .15s ease, border-color .15s ease;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  }
+  .sel-check::after{
+    content:""; position:absolute; left:6.6px; top:3px; width:5.5px; height:10.5px;
+    border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg) scale(0); transition: transform .15s ease;
+  }
+  .sel-check.on{ background: var(--accent); border-color: var(--accent); }
+  .sel-check.on::after{ transform:rotate(45deg) scale(1); }
+  .app.selecting .row.has-reactions{ flex-direction:row; align-items:center; gap:5px; }
+  .select-bar{
+    position:fixed; left:0; right:0; bottom:0; z-index:120;
+    width:min(100vw, var(--ref-width)); margin:0 auto;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding: 0 var(--side-pad) env(safe-area-inset-bottom);
+    height: calc(var(--composer-h) + 14px);
+    background: var(--composer-bg);
+    border-top:1px solid var(--hairline);
+    box-shadow: 0 -12px 32px rgba(24,46,67,.08);
+    opacity:0; pointer-events:none;
+    transform: translate3d(0, 100%, 0);
+    transition: transform .28s cubic-bezier(.2,.8,.2,1), opacity .2s ease;
+  }
+  .select-bar.show{ opacity:1; pointer-events:auto; transform: translate3d(0, 0, 0); }
+  .select-bar .select-count{
+    flex:1 1 auto; text-align:center;
+    font-family:var(--font-en), var(--font-cn); font-size: clamp(13px,1.7vw,16px); color:var(--text-soft);
+    -webkit-user-select:none; user-select:none;
+  }
+  .selbtn{
+    appearance:none; -webkit-appearance:none; border:none; background:transparent;
+    font-family:var(--font-en), var(--font-cn); font-size: clamp(13px,1.7vw,16px);
+    color: var(--accent); padding: 12px 12px; border-radius: 12px; cursor:pointer;
+    flex:none; transition: background var(--motion-fast), color .2s ease;
+  }
+  .selbtn:active{ background: var(--row-press); }
+  .selbtn:disabled{ opacity:.4; }
+  .selbtn.danger{ color:#e05a4d; font-weight:600; }
+
+  /* ── 编辑消息浮层 ── */
+  .edit-overlay{ position:fixed; inset:0; z-index:260; opacity:0; pointer-events:none; }
+  .edit-overlay.open{ opacity:1; pointer-events:auto; }
+  .edit-scrim{
+    position:absolute; inset:0; background:rgba(10,16,24,.38);
+    -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px);
+    opacity:0; transition:opacity .24s ease;
+  }
+  .edit-overlay.open .edit-scrim{ opacity:1; }
+  .edit-sheet{
+    position:absolute; left:50%; bottom:0;
+    width:min(100vw, var(--ref-width));
+    transform:translate3d(-50%, 105%, 0);
+    background:var(--composer-bg);
+    border-radius: 20px 20px 0 0;
+    padding: 4px var(--side-pad) calc(16px + env(safe-area-inset-bottom));
+    transition: transform .28s cubic-bezier(.2,.8,.2,1);
+    display:flex; flex-direction:column; gap:10px;
+    max-height: 72vh;
+  }
+  .edit-overlay.open .edit-sheet{ transform:translate3d(-50%, 0, 0); }
+  .edit-head{ display:flex; align-items:center; justify-content:space-between; }
+  .edit-title{ font-family:var(--font-en), var(--font-cn); font-size:15px; color:var(--text-soft); font-weight:600; }
+  .edit-btn{
+    appearance:none; -webkit-appearance:none; border:none; background:transparent;
+    font-family:var(--font-en), var(--font-cn); font-size:15px; cursor:pointer; padding:11px 10px;
+    border-radius: 12px; transition: background var(--motion-fast);
+  }
+  .edit-btn:active{ background:var(--row-press); }
+  .edit-btn.ghost{ color: var(--text-soft); }
+  .edit-btn.primary{ color: var(--accent); font-weight:600; }
+  #editTextEl{
+    width:100%; box-sizing:border-box; border:1px solid var(--field-line); border-radius:16px;
+    background:var(--field-bg); color:var(--text);
+    font-family:var(--font-en), var(--font-cn); font-size: clamp(15px,2vw,17px); line-height:1.5;
+    padding: 12px 14px; resize:none; outline:none;
+  }
+  #editTextEl:focus{ border-color: var(--accent); }
+  @media (prefers-reduced-motion: reduce){
+    .edit-sheet, .select-bar{ transition: opacity .2s ease; }
+  }
 
   /* ── reaction chips (AI poke) ── */
   .row.has-reactions{ flex-direction:column; gap:5px; }
@@ -2108,6 +2203,9 @@
     <button class="floatbtn hidden" id="micBtn" aria-label="语音" title="语音">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21.5"/></svg>
     </button>
+    <button class="floatbtn stop hidden" id="stopBtn" aria-label="停止生成" title="停止生成">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6.2" y="6.2" width="11.6" height="11.6" rx="2.4"/></svg>
+    </button>
     <button class="floatbtn send" id="sendBtn" aria-label="发送">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M6.5 10.5L12 5l5.5 5.5"/></svg>
     </button>
@@ -2116,6 +2214,26 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M6 13l6 6 6-6"/></svg>
     <span>新消息</span>
   </button>
+  <!-- ── 多选消息工具条(勾选多条后显示) ── -->
+  <div class="select-bar" id="selectBar" aria-hidden="true">
+    <button class="selbtn ghost" id="selectCancelBtn" type="button">取消</button>
+    <span class="select-count" id="selectCount">已选 0 条</span>
+    <button class="selbtn ghost" id="selectAllBtn" type="button">全选</button>
+    <button class="selbtn danger" id="selectDeleteBtn" type="button" disabled>删除</button>
+  </div>
+</div>
+
+<!-- ── 编辑消息浮层 ── -->
+<div class="edit-overlay" id="editOverlay" aria-hidden="true">
+  <div class="edit-scrim" id="editScrim"></div>
+  <div class="edit-sheet" role="dialog" aria-modal="true" aria-label="编辑消息">
+    <div class="edit-head">
+      <button class="edit-btn ghost" id="editCancelBtn" type="button">取消</button>
+      <strong class="edit-title">编辑消息</strong>
+      <button class="edit-btn primary" id="editSaveBtn" type="button">保存</button>
+    </div>
+    <textarea id="editTextEl" rows="5" maxlength="10000" placeholder="写下新的内容…"></textarea>
+  </div>
 </div>
 
 <!-- ── Terminal renderer (same conversation, different skin) ── -->
@@ -2510,6 +2628,14 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
       <span>Copy</span>
     </button>
+    <button class="msg-act" type="button" data-act="edit" role="menuitem">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      <span>Edit</span>
+    </button>
+    <button class="msg-act" type="button" data-act="select" role="menuitem">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span>Select</span>
+    </button>
     <button class="msg-act danger" type="button" data-act="delete" role="menuitem">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M5 7l1 13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-13"/><path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>
       <span>Delete</span>
@@ -2570,7 +2696,7 @@ function persistDeletedKeys(){
 const $ = (s) => document.querySelector(s);
 const loginEl = $("#login"), appEl = $("#app");
 const scrollEl = $("#scroll"), emptyEl = $("#empty");
-const statusEl = $("#status"), inputEl = $("#input"), sendBtn = $("#sendBtn"), newMsgBtn = $("#newMsgBtn");
+const statusEl = $("#status"), inputEl = $("#input"), sendBtn = $("#sendBtn"), stopBtn = $("#stopBtn"), newMsgBtn = $("#newMsgBtn");
 const micBtn = $("#micBtn"), clipBtn = $("#clipBtn"), avatarBtn = $("#avatarBtn");
 const clipInput = $("#clipInput");
 const localPreview = new Map();   // serverUrl -> blob: 本地预览，避免上传后重新下载闪烁
@@ -6176,6 +6302,7 @@ function applyStreamDelta(ev){
       setMessage({ ...existing, text: finalText, meta: finalMeta, status: "sent" }, { render: true, cache: true });
       streamDrafts.delete(mapKey);
     }
+    updateStopUi();
     return;
   }
 
@@ -6199,6 +6326,7 @@ function applyStreamDelta(ev){
   }, { render:false, cache:false });
   scheduleRender({ stickToBottom: stick });
   scheduleTerminalRender({ stickToBottom: stick });
+  updateStopUi();
   if (!stick && kind === "reply") showNewMsgPill();
 }
 
@@ -6208,12 +6336,14 @@ function showTyping(){
   if (window.VoiceCall && window.VoiceCall.isOpen()) window.VoiceCall.peerTyping(true);
   if (typingTimer) clearTimeout(typingTimer);
   typingTimer = setTimeout(hideTyping, 120000);
+  updateStopUi();
 }
 function hideTyping(){
   typingActive = false;
   renderStatus();
   if (window.VoiceCall && window.VoiceCall.isOpen()) window.VoiceCall.peerTyping(false);
   if (typingTimer){ clearTimeout(typingTimer); typingTimer = null; }
+  updateStopUi();
 }
 
 function onMessage(m){
@@ -6237,6 +6367,51 @@ function onMessage(m){
   if (m.type === "reaction"){            // the AI reacted to a message → patch its meta.reactions
     hideTyping();                         // a react also means the AI acted: a react-only turn won't send a reply to clear typing, so clear it here
     applyReaction(m);
+    return;
+  }
+  if (m.type === "messages_deleted"){    // 其他端批量删除 → 本地同步消失,并记墓碑防止缓存回填复活
+    (m.ids || []).forEach((n) => {
+      const k = msgKey(n);
+      deletedKeys.add(k);
+      removeMessage(k, { render:false });
+    });
+    persistDeletedKeys();
+    scheduleRender({ preserveAnchor: true });
+    return;
+  }
+  if (m.type === "message_edited"){      // 其他端编辑了某条消息 → 同步新文本
+    const k = msgKey(m.id);
+    const msg = messageByKey.get(k);
+    if (msg){
+      msg.text = String(m.text || "");
+      serverHistoryCache.forEach((x) => { if (msgKey(x.id) === k) x.text = msg.text; });
+      invalidateRows();
+      scheduleRender({ preserveAnchor: true });
+      scheduleCacheSave();
+    }
+    return;
+  }
+  if (m.type === "stream_stop"){         // 生成被停止 → 定格对应的流式草稿(其他端触发也同步)
+    (m.streams || []).forEach((s) => {
+      const sid = String(s.stream_id || "");
+      const kind = s.kind || "";
+      if (!sid || !kind) return;
+      const mapKey = streamMapKey(sid, kind);
+      streamDeltaBuffers.delete(mapKey);
+      const draftKey = streamDrafts.get(mapKey);
+      if (!draftKey) return;
+      streamDrafts.delete(mapKey);
+      const msg = messageByKey.get(draftKey);
+      if (msg){
+        const meta = { ...(msg.meta || {}) };
+        delete meta.streaming;
+        stoppedStreamKeys.add(mapKey);
+        setMessage({ ...msg, meta, status:"sent" }, { render:false, cache:true });
+      }
+    });
+    updateStopUi();
+    invalidateRows();
+    scheduleRender({ preserveAnchor: true });
     return;
   }
   if (m.from === "ai" && m.kind === "call"){
@@ -6331,6 +6506,8 @@ function applyReaction(ev){
     openKey = info.key;
     const copyBtn = actions.querySelector('[data-act="copy"]');
     if (copyBtn) copyBtn.style.display = info.msg.text ? "" : "none";   // 纯图无文字 → 只留 Delete
+    const editBtn = actions.querySelector('[data-act="edit"]');
+    if (editBtn) editBtn.style.display = (info.msg.text && msgNum(info.msg.id) > 0) ? "" : "none";   // 只能编辑已落库的文字消息
     const r = bubble.getBoundingClientRect();
     // 1) 克隆气泡,固定原位,准备轻微抬起
     cloneEl = bubble.cloneNode(true);
@@ -6389,10 +6566,31 @@ function applyReaction(ev){
     const key = openKey;                       // close() 会清空 openKey,先抓住
     close();
     if (key == null) return;
+    const msg = messageByKey.get(msgKey(key));
     deletedKeys.add(msgKey(key));              // 记下来 → 刷新/backfill 都不会让它跑回来
     persistDeletedKeys();
-    removeMessage(key);                        // 从内存 + IndexedDB 缓存移除并重渲
+    removeMessage(key);                        // 先本地立即消失(乐观),再同步服务器
+    const idNum = msg ? msgNum(msg.id) : 0;
+    if (idNum > 0){
+      apiDeleteMessages([idNum]).then(() => {
+        if (serverHistoryCache.length) serverHistoryCache = serverHistoryCache.filter((x) => msgKey(x.id) !== msgKey(key));
+      }).catch((e) => {
+        if (String(e.message) !== "401") showToast("本机已删除，服务器同步失败");
+      });
+    }
     showToast("已删除");
+  }
+  function doEdit(){
+    const key = openKey;
+    close();
+    if (key == null) return;
+    openEditOverlay(key);
+  }
+  function doSelect(){
+    const key = openKey;
+    close();
+    if (key == null) return;
+    enterSelectMode(key);
   }
 
   // 长按检测 —— 用 touch 事件自己计时。不用 pointer:iOS 一识别长按就给页面发 pointercancel,
@@ -6407,7 +6605,7 @@ function applyReaction(ev){
     }
   }
   scrollEl.addEventListener("touchstart", (e) => {
-    if (isOpen() || e.touches.length !== 1) return;          // 多指(缩放)不触发
+    if (selectModeOn || isOpen() || e.touches.length !== 1) return;          // 多选模式下点按即勾选,不给长按菜单;多指(缩放)不触发
     const bubble = e.target.closest(".bubble");
     if (!bubble || !scrollEl.contains(bubble) || e.target.closest("a")) return;
     pressBubble = bubble;
@@ -6425,6 +6623,7 @@ function applyReaction(ev){
 
   // 桌面右键
   scrollEl.addEventListener("contextmenu", (e) => {
+    if (selectModeOn) return;
     const bubble = e.target.closest(".bubble");
     if (!bubble || !scrollEl.contains(bubble)) return;
     if (!bubbleInfo(bubble)) return;
@@ -6437,12 +6636,254 @@ function applyReaction(ev){
     const act = e.target.closest(".msg-act");
     if (!act) return;
     if (act.dataset.act === "copy") doCopy();
+    else if (act.dataset.act === "edit") doEdit();
+    else if (act.dataset.act === "select") doSelect();
     else if (act.dataset.act === "delete") doDelete();
   });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
   window.addEventListener("resize", close);
   scrollEl.addEventListener("scroll", () => { if (isOpen()) close(); }, { passive:true });
 })();
+
+/* ════════════ 多选消息 · 批量删除 ════════════ */
+let selectModeOn = false;
+const selectedKeys = new Set();
+const selectBarEl = $("#selectBar"), selectCountEl = $("#selectCount"),
+      selectAllBtnEl = $("#selectAllBtn"), selectDeleteBtnEl = $("#selectDeleteBtn"),
+      selectCancelBtnEl = $("#selectCancelBtn");
+
+function isSelectableMessage(m){
+  return !!(m && m.kind !== "thinking" && m.kind !== "act" && msgNum(m.id) > 0);
+}
+function selectableMessages(){
+  return sortedMessages().filter(isSelectableMessage);
+}
+function refreshSelectUi(){
+  const all = selectableMessages();
+  const valid = new Set(all.map((m) => m._key));
+  Array.from(selectedKeys).forEach((k) => { if (!valid.has(k)) selectedKeys.delete(k); });
+  const n = selectedKeys.size;
+  if (selectCountEl) selectCountEl.textContent = `已选 ${n} 条`;
+  if (selectAllBtnEl) selectAllBtnEl.textContent = (n > 0 && n === all.length) ? "取消全选" : "全选";
+  if (selectDeleteBtnEl) selectDeleteBtnEl.disabled = n === 0;
+  invalidateRows();
+  scheduleRender({ preserveAnchor: true });
+}
+function exitSelectMode(){
+  selectModeOn = false;
+  selectedKeys.clear();
+  appEl.classList.remove("selecting");
+  if (selectBarEl) selectBarEl.classList.remove("show");
+  invalidateRows();
+  scheduleRender({ preserveAnchor: true });
+}
+function enterSelectMode(firstKey = ""){
+  if (selectModeOn) return;
+  selectModeOn = true;
+  selectedKeys.clear();
+  appEl.classList.add("selecting");
+  if (selectBarEl) selectBarEl.classList.add("show");
+  if (firstKey) selectedKeys.add(msgKey(firstKey));
+  refreshSelectUi();
+}
+function toggleSelectKey(key){
+  if (selectedKeys.has(key)) selectedKeys.delete(key); else selectedKeys.add(key);
+  refreshSelectUi();
+}
+scrollEl.addEventListener("click", (e) => {
+  if (!selectModeOn) return;
+  if (e.target.closest("a")) return;               // 附件/链接点了是打开,不勾选
+  const row = e.target.closest("[data-message-key]");
+  if (!row || !scrollEl.contains(row)) return;
+  const m = messageByKey.get(row.dataset.messageKey);
+  if (!m || !isSelectableMessage(m)) return;
+  toggleSelectKey(row.dataset.messageKey);
+});
+selectCancelBtnEl?.addEventListener("click", exitSelectMode);
+selectAllBtnEl?.addEventListener("click", () => {
+  const all = selectableMessages();
+  if (selectedKeys.size > 0 && selectedKeys.size === all.length) selectedKeys.clear();
+  else all.forEach((m) => selectedKeys.add(m._key));
+  refreshSelectUi();
+});
+selectDeleteBtnEl?.addEventListener("click", async () => {
+  if (selectDeleteBtnEl.disabled) return;
+  const ids = selectableMessages().filter((m) => selectedKeys.has(m._key)).map((m) => msgNum(m.id));
+  if (!ids.length) return;
+  if (!confirm(`删除选中的 ${ids.length} 条消息？\n\n服务器和本机都会删除，无法恢复。`)) return;
+  selectDeleteBtnEl.disabled = true;
+  try{
+    await apiDeleteMessages(ids);
+    exitSelectMode();
+    const idSet = new Set(ids.map(String));
+    Array.from(idSet).forEach((k) => {
+      deletedKeys.add(k);
+      removeMessage(k, { render:false });
+    });
+    persistDeletedKeys();
+    if (serverHistoryCache.length) serverHistoryCache = serverHistoryCache.filter((x) => !idSet.has(msgKey(x.id)));
+    invalidateRows();
+    scheduleRender({ stickToBottom: nearBottom() });
+    showToast(`已删除 ${ids.length} 条消息`);
+  }catch(e){
+    if (String(e.message) !== "401") showToast("删除失败，请重试");
+    refreshSelectUi();
+  }
+});
+
+/* ════════════ 编辑消息 ════════════ */
+const editOverlayEl = $("#editOverlay"), editScrimEl = $("#editScrim"), editTextEl = $("#editTextEl"),
+      editSaveBtnEl = $("#editSaveBtn"), editCancelBtnEl = $("#editCancelBtn");
+let editingKey = null;
+function openEditOverlay(key){
+  const m = messageByKey.get(msgKey(key));
+  if (!m) return;
+  editingKey = msgKey(key);
+  if (editTextEl) editTextEl.value = m.text || "";
+  editOverlayEl.classList.add("open");
+  editOverlayEl.setAttribute("aria-hidden", "false");
+  setTimeout(() => {
+    try{
+      const el = editTextEl, v = el.value.length;
+      el.focus(); el.setSelectionRange(v, v);
+    }catch(_){}
+  }, 260);
+}
+function closeEditOverlay(){
+  editOverlayEl.classList.remove("open");
+  editOverlayEl.setAttribute("aria-hidden", "true");
+  editingKey = null;
+  try{ if (document.activeElement === editTextEl) editTextEl.blur(); }catch(_){}
+}
+function applyEditedText(key, text){
+  const m = messageByKey.get(msgKey(key));
+  if (!m) return false;
+  m.text = text;
+  const k = msgKey(key);
+  serverHistoryCache.forEach((x) => { if (msgKey(x.id) === k) x.text = text; });
+  invalidateRows();
+  scheduleRender({ preserveAnchor: true });
+  scheduleCacheSave();
+  scheduleTerminalRender();
+  return true;
+}
+async function doEditSave(){
+  const key = editingKey;
+  const text = String(editTextEl ? editTextEl.value : "").trim();
+  if (!key){ closeEditOverlay(); return; }
+  const m = messageByKey.get(msgKey(key));
+  if (!m){ closeEditOverlay(); return; }
+  if (!text){ showToast("内容不能为空"); try{ editTextEl.focus(); }catch(_){} return; }
+  if (text === (m.text || "")){ closeEditOverlay(); return; }
+  const idNum = msgNum(m.id);
+  closeEditOverlay();
+  if (idNum > 0){
+    try{
+      await apiEditMessage(idNum, text);
+      applyEditedText(key, text);
+      showToast("已保存");
+    }catch(e){
+      if (String(e.message) !== "401") showToast("保存失败，请重试");
+    }
+  }else{
+    applyEditedText(key, text);
+    showToast("已保存");
+  }
+}
+editSaveBtnEl?.addEventListener("click", doEditSave);
+editCancelBtnEl?.addEventListener("click", closeEditOverlay);
+editScrimEl?.addEventListener("click", closeEditOverlay);
+window.addEventListener("keydown", (e) => {
+  if (!editOverlayEl.classList.contains("open")) return;
+  if (e.key === "Escape"){ e.preventDefault(); closeEditOverlay(); }
+  else if (e.key === "Enter" && !e.shiftKey && !composing){ e.preventDefault(); doEditSave(); }
+});
+
+/* ════════════ 停止生成 ════════════ */
+function generatingNow(){
+  return typingActive || streamDrafts.size > 0 || streamDeltaBuffers.size > 0;
+}
+function updateStopUi(){
+  if (!stopBtn) return;
+  if (generatingNow()){
+    stopBtn.classList.remove("hidden");
+    sendBtn.classList.add("hidden");
+    micBtn.classList.add("hidden");
+  }else{
+    stopBtn.classList.add("hidden");
+    sendBtn.classList.remove("hidden");
+  }
+}
+const stoppedStreamKeys = new Set();   // "kind:streamId" — 已定格草稿,防止迟到的最终消息造成重复气泡
+function finalizeAllDrafts({ render = true } = {}){
+  let changed = false;
+  Array.from(streamDrafts.keys()).forEach((mapKey) => {
+    const key = streamDrafts.get(mapKey);
+    const m = key ? messageByKey.get(key) : null;
+    if (m){
+      const meta = { ...(m.meta || {}) };
+      delete meta.streaming;
+      stoppedStreamKeys.add(mapKey);
+      setMessage({ ...m, meta, status:"sent" }, { render:false, cache:true });
+      changed = true;
+    }
+    streamDrafts.delete(mapKey);
+  });
+  streamDeltaBuffers.clear();
+  if (streamFlushTimer){ clearTimeout(streamFlushTimer); streamFlushTimer = null; }
+  updateStopUi();
+  if (changed && render){
+    invalidateRows();
+    scheduleRender({ stickToBottom: nearBottom() });
+    scheduleTerminalRender();
+  }
+}
+async function doStop(){
+  try{ await apiStop(); }catch(_){}
+  finalizeAllDrafts();
+  hideTyping();
+  showToast("已停止");
+}
+stopBtn?.addEventListener("click", doStop);
+
+/* ════════════ 消息操作 API ════════════ */
+async function apiDeleteMessages(ids){
+  if (USE_MOCK){
+    (ids || []).forEach((n) => {
+      const k = msgKey(n);
+      deletedKeys.add(k);
+      removeMessage(k, { render:false });
+    });
+    persistDeletedKeys();
+    return { deleted: (ids || []).length };
+  }
+  const r = await fetch(`${API_BASE}/app/messages/delete`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ ids })
+  });
+  if (r.status === 401){ handle401(); throw new Error("401"); }
+  if (!r.ok) throw new Error("delete " + r.status);
+  return await r.json();
+}
+async function apiEditMessage(mid, text){
+  if (USE_MOCK){ applyEditedText(msgKey(mid), text); return { ok:true }; }
+  const r = await fetch(`${API_BASE}/app/messages/${mid}`, {
+    method: "PATCH",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+  if (r.status === 401){ handle401(); throw new Error("401"); }
+  if (!r.ok) throw new Error("edit " + r.status);
+  return await r.json();
+}
+async function apiStop(){
+  if (USE_MOCK) return { ok:true };
+  const r = await fetch(`${API_BASE}/app/stop`, { method: "POST", headers: authHeaders() });
+  if (r.status === 401){ handle401(); throw new Error("401"); }
+  if (!r.ok) throw new Error("stop " + r.status);
+  return await r.json();
+}
 
 /* ════════════ 滚动 ════════════ */
 function nearBottom(){ return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 160; }

@@ -1075,6 +1075,66 @@ async def app_sessions_messages_clear(session_id: str, request: Request):
     return {"cleared": cleared, "session_id": sid}
 
 
+@app.post("/app/messages/delete")
+async def app_messages_delete(request: Request):
+    """Batch-delete stored messages by numeric id (PWA multi-select delete)."""
+    check_auth(request)
+    body = await request.json()
+    raw_ids = body.get("ids") if isinstance(body, dict) else None
+    ids: list[int] = []
+    if isinstance(raw_ids, list):
+        for raw in raw_ids:
+            try:
+                n = int(raw)
+                if n > 0:
+                    ids.append(n)
+            except (TypeError, ValueError):
+                pass
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids required")
+    with db() as conn:
+        cur = conn.execute("DELETE FROM messages WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)
+        conn.commit()
+        deleted = cur.rowcount
+    await broadcast(app_subs, {"type": "messages_deleted", "ids": ids})
+    return {"deleted": deleted, "ids": ids}
+
+
+@app.patch("/app/messages/{mid}")
+async def app_message_edit(mid: int, request: Request):
+    """Update the text of one stored message (PWA long-press → edit)."""
+    check_auth(request)
+    body = await request.json()
+    text = (body.get("text") or "").strip() if isinstance(body, dict) else ""
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    with db() as conn:
+        cur = conn.execute("UPDATE messages SET text = ? WHERE id = ?", (text, mid))
+        row = conn.execute("SELECT direction FROM messages WHERE id = ?", (mid,)).fetchone()
+        if cur.rowcount == 0 or row is None:
+            raise HTTPException(status_code=404, detail="message not found")
+        conn.commit()
+    await broadcast(app_subs, {
+        "type": "message_edited", "id": mid, "text": text,
+        "from": "human" if row["direction"] == "in" else "ai",
+    })
+    return {"ok": True, "id": mid, "text": text}
+
+
+@app.post("/app/stop")
+async def app_stop(request: Request):
+    """Human tapped "stop": cancel in-flight stream drafts, clear the typing state,
+    and tell the AI side (best-effort) to stop generating."""
+    check_auth(request)
+    await broadcast(plugin_subs, {"type": "stop"})
+    cancelled = [{"stream_id": key[0], "kind": key[1]} for key in list(stream_drafts.keys())]
+    stream_drafts.clear()
+    await broadcast(app_subs, {"type": "typing", "active": False})
+    if cancelled:
+        await broadcast(app_subs, {"type": "stream_stop", "streams": cancelled})
+    return {"ok": True, "cancelled_streams": len(cancelled)}
+
+
 WEB_DIR = Path(os.environ.get("RELAY_WEB_DIR", str(Path(__file__).parent.parent / "web")))
 if WEB_DIR.is_dir():
     from starlette.middleware.base import BaseHTTPMiddleware
