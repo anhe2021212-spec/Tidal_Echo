@@ -375,14 +375,16 @@ def _forward_to_loop_sync(msg: dict) -> None:
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    urllib.request.urlopen(req, timeout=10).read()
+    # 带思考链的模型一轮(思考+工具调用+再生成)可能数分钟,通知超时放宽。
+    # 即使超时,loop 仍在后台继续处理,回复会通过 /channel/out 推回,不影响使用。
+    urllib.request.urlopen(req, timeout=300).read()
 
 
 async def forward_to_loop(msg: dict) -> None:
     try:
         await asyncio.to_thread(_forward_to_loop_sync, msg)
     except Exception as exc:
-        print(f"[loop] forward failed: {type(exc).__name__}: {exc}")
+        print(f"[loop] forward notify failed ({type(exc).__name__}: {exc}); loop keeps processing in background")
 
 
 def prune_stream_drafts() -> None:
