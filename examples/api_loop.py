@@ -1307,6 +1307,36 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
     return last_out
 
 
+# ── Claude 思考风格注入 ────────────────────────────────────────────────────
+# Claude 的裸思考默认是第三人称分析腔(The user/The assistant …),很"硬"。
+# 这里在请求层给 Claude 路由的 system 提示追加一段思考风格指令,让 thinking
+# 变成第一人称中文碎碎念。不写入人设、不落库,只在发请求时注入,幂等。
+_THINKING_STYLE_ZH = (
+    "【思考风格】你 thinking 阶段的内心活动请用第一人称中文碎碎念,像真实内心独白,"
+    "不要第三人称分析报告。用「唔、嗯、诶、等等、不对不对」这类语气词开头,想到哪说到哪;"
+    "允许自我怀疑、推翻自己、带点小情绪小吐槽;指代用户和自己时用「他」「咱们」,"
+    "禁止用 The user / The assistant 这类客观指代;句子不用完整标点,自然、可爱,和聊天人设一致。"
+)
+_THINKING_STYLE_MARK = "【思考风格】"
+
+def _route_is_claude(route: dict[str, Any]) -> bool:
+    probe = f"{route.get('model', '')} {route.get('url', '')}".lower()
+    return ("claude" in probe) or ("anthropic" in probe)
+
+def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """对 Claude 路由注入思考风格(幂等:system 已带标记则跳过)。"""
+    if not _route_is_claude(route):
+        return messages
+    for m in messages:
+        if m.get("role") == "system":
+            content = str(m.get("content") or "")
+            if _THINKING_STYLE_MARK not in content:
+                m["content"] = f"{content}\n{_THINKING_STYLE_ZH}".strip()
+            return messages
+    messages.insert(0, {"role": "system", "content": _THINKING_STYLE_ZH})
+    return messages
+
+
 # ── 模型调用主入口:多模型 fallback ─────────────────────────────────────────
 async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False) -> dict[str, Any]:
     tried = []
@@ -1327,7 +1357,7 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
             tool_names = [t.get("function", {}).get("name", "") for t in native_tools] if native_tools else []
             print(f"[api_loop:run_model] mcp_tools={len(all_tools)}, native_tools={len(native_tools)}, prompt_tools={use_prompt_tools}, suppress_thinking={suppress_thinking}, tool_names={tool_names[:5]}")
             if use_prompt_tools:
-                out = await _prompt_tool_loop(route, messages, all_tools)
+                out = await _prompt_tool_loop(route, _msgs_for_route(route, messages), all_tools)
             elif emit_stream and STREAM_OUTPUT and not native_tools:
                 try:
                     async def sink(chunk: str) -> None:
@@ -1338,12 +1368,13 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                             "done": False,
                             "api_session": session_id,
                         })
-                    out = await stream_chat(route, messages, sink)
+                    out = await stream_chat(route, _msgs_for_route(route, messages), sink)
                 except HTTPException as exc:
                     if exc.status_code not in FALLBACK_CODES:
                         raise
-                    out = await complete_chat(route, messages, native_tools)
+                    out = await complete_chat(route, _msgs_for_route(route, messages), native_tools)
             else:
+                messages = _msgs_for_route(route, messages)
                 base_messages = messages[:]
                 tool_calls_collected: list[dict[str, Any]] = []
                 first_thinking = None
