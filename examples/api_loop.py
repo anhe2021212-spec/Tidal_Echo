@@ -906,15 +906,36 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                 base_messages = messages[:]
                 tool_calls_collected: list[dict[str, Any]] = []
                 first_thinking = None
+                suppress = suppress_thinking
                 try:
                     for round_idx in range(8):
-                        out = await complete_chat(route, messages, native_tools, disable_thinking=suppress_thinking)
+                        out = await complete_chat(route, messages, native_tools, disable_thinking=suppress)
                         if round_idx == 0 and out.get("thinking"):
                             first_thinking = out["thinking"]
                         msg = out.get("message") or {}
                         calls = msg.get("tool_calls") or []
                         if not calls and isinstance(msg.get("function_call"), dict):
                             calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
+                        # 静默冲突：thinking 已启用 + 传了原生工具，但本轮既没思考也没调用工具。
+                        # 部分中转端在思考模式下会静默丢弃 tools（不报 400，直接回正文），
+                        # 探测到后标记该路由，并在本轮及后续轮次改用「关闭思考」重试。
+                        if (
+                            round_idx == 0
+                            and not calls
+                            and not out.get("thinking")
+                            and native_tools
+                            and thinking_budget() > 0
+                            and not suppress
+                        ):
+                            print(f"[api_loop:run_model] silent thinking+tools conflict, retrying without thinking: {route_key}")
+                            _THINKING_TOOLS_CONFLICT.add(route_key)
+                            suppress = True
+                            messages = base_messages[:]
+                            out = await complete_chat(route, messages, native_tools, disable_thinking=True)
+                            msg = out.get("message") or {}
+                            calls = msg.get("tool_calls") or []
+                            if not calls and isinstance(msg.get("function_call"), dict):
+                                calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
                         if not calls:
                             break
                         messages.append(msg)
