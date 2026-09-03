@@ -2028,6 +2028,17 @@
   }
   .sel-check.on{ background: var(--accent); border-color: var(--accent); }
   .sel-check.on::after{ transform:rotate(45deg) scale(1); }
+  /* 选中的消息:气泡外圈 accent 描边 + 淡色晕染,一眼看清选了哪几条 */
+  .app.selecting .row.selected .bubble{
+    box-shadow: 0 0 0 2px var(--accent), 0 10px 28px rgba(78,94,108,.10);   /* 不支持 color-mix 的旧浏览器回退 */
+    box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent), 0 10px 28px rgba(78,94,108,.10);
+  }
+  .app.selecting .row.selected .bubble.has-att{
+    box-shadow: 0 0 0 2px var(--accent);
+    box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .app.selecting .row.selected .sel-check{ animation: selPop .28s cubic-bezier(.34,1.56,.5,1) both; }
+  @keyframes selPop{ 0%{ transform:scale(.6); } 100%{ transform:scale(1); } }
   .app.selecting .row.has-reactions{ flex-direction:row; align-items:center; gap:5px; }
   .select-bar{
     position:fixed; left:0; right:0; bottom:0; z-index:120;
@@ -4642,6 +4653,7 @@ async function loadSessions(){
   renderSessionList();
 }
 async function activateSession(sessionId, { reload = true } = {}){
+  if (selectModeOn) exitSelectMode();           // 换窗口先退出多选,别带着别的会话的勾选状态
   activeApiSession = sessionId || LEGACY_SESSION_ID;
   try{ localStorage.setItem(SESSION_PICK_KEY, activeApiSession); }catch(_){}
   resetServerHistoryCache();
@@ -4663,6 +4675,7 @@ async function activateSession(sessionId, { reload = true } = {}){
   }
 }
 async function createNewSession(){
+  if (selectModeOn) exitSelectMode();
   try{
     const r = await fetch(`${API_BASE}/app/sessions`, {
       method:"POST",
@@ -6112,6 +6125,7 @@ function paintWindow(n){
     for (const k of nodeCache.keys()) if (!keep.has(k)) nodeCache.delete(k);
   }
   renderedSignature = signature;
+  syncSelectVisuals();                                   // 新物化/复用的行上恢复勾选圈与高亮
 }
 // 物化行停下后测真高存 rowHeights(供日后该行被卸载进 spacer 时算准占位高)。不触发重渲,滚动中跳过。
 // reStick:本次是贴底渲染 → 估高被实测修正、总高变化后重新对齐到底(否则首次大列表贴底会差一截)。
@@ -6658,6 +6672,35 @@ function isSelectableMessage(m){
 function selectableMessages(){
   return sortedMessages().filter(isSelectableMessage);
 }
+function makeSelCheck(){
+  const c = document.createElement("span");
+  c.className = "sel-check";
+  c.setAttribute("aria-hidden", "true");
+  return c;
+}
+// 把「勾选圈 + 选中高亮」同步到当前物化的 DOM 行上(虚拟列表会复用/卸载行,状态必须跟着行走,
+// 不能只靠重渲染——行签名不含选中态)。多选模式下每行末尾挂一个圈,选中即实心打勾 + 气泡描边。
+function syncSelectVisuals(){
+  for (const el of scrollEl.children){
+    if (!el || !el.dataset || !el.dataset.vkey) continue;
+    const key = el.dataset.messageKey;
+    const m = key ? messageByKey.get(msgKey(key)) : null;
+    const selectable = selectModeOn && !!(m && isSelectableMessage(m));
+    if (selectable){
+      let sel = el.querySelector(":scope > .sel-check");
+      if (!sel){
+        sel = makeSelCheck();
+        el.appendChild(sel);
+      }
+      sel.classList.toggle("on", selectedKeys.has(m._key));
+      el.classList.toggle("selected", selectedKeys.has(m._key));
+    }else{
+      el.classList.remove("selected");
+      const sel = el.querySelector(":scope > .sel-check");
+      if (sel) sel.remove();
+    }
+  }
+}
 function refreshSelectUi(){
   const all = selectableMessages();
   const valid = new Set(all.map((m) => m._key));
@@ -6666,6 +6709,7 @@ function refreshSelectUi(){
   if (selectCountEl) selectCountEl.textContent = `已选 ${n} 条`;
   if (selectAllBtnEl) selectAllBtnEl.textContent = (n > 0 && n === all.length) ? "取消全选" : "全选";
   if (selectDeleteBtnEl) selectDeleteBtnEl.disabled = n === 0;
+  syncSelectVisuals();
   invalidateRows();
   scheduleRender({ preserveAnchor: true });
 }
@@ -6674,6 +6718,7 @@ function exitSelectMode(){
   selectedKeys.clear();
   appEl.classList.remove("selecting");
   if (selectBarEl) selectBarEl.classList.remove("show");
+  syncSelectVisuals();
   invalidateRows();
   scheduleRender({ preserveAnchor: true });
 }
