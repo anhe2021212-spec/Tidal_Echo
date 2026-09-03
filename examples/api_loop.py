@@ -917,8 +917,8 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
         text = out.get("text") or ""
         calls = _extract_tool_calls(text)
         if not calls:
-            if not nudged:
-                # 模型没按协议输出:追加一次强制提示,再给它一次机会
+            if not nudged and not tool_calls_collected:
+                # 尚未执行过任何工具:追加一次强制提示,再给它一次机会
                 nudged = True
                 print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, nudging once, text_preview={text[:150]!r}")
                 messages.append({"role": "assistant", "content": text})
@@ -927,7 +927,9 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
                     "reply with ONLY a valid <tool_call>{...}</tool_call> block and nothing else. "
                     "If you really do not need any tool, just answer the user directly."})
                 continue
-            print(f"[api_loop:_prompt_tool_loop] still no <tool_call> after nudge, giving up, text_preview={text[:150]!r}")
+            # 已执行过工具后的最终回答,或 nudge 后仍无效 → 收尾
+            if not tool_calls_collected:
+                print(f"[api_loop:_prompt_tool_loop] still no <tool_call> after nudge, giving up, text_preview={text[:150]!r}")
             break
         result_msgs: list[dict[str, Any]] = []
         for call in calls:
