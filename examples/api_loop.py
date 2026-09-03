@@ -720,15 +720,18 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
     tool_calls_parsed: list[dict[str, Any]] = []
     raw_tool_calls = []
     for tc in tool_calls_buf:
+        name = (tc.get("name") or "").strip()
+        if not name:
+            continue  # 跳过流式解析产生的空 name 幽灵 tool_call，避免下发 "MCP tool is not configured"
         try:
             args = json.loads(tc.get("arguments_buf") or "{}")
         except (json.JSONDecodeError, TypeError):
             args = {}
-        tool_calls_parsed.append({"name": tc.get("name", ""), "input": args})
+        tool_calls_parsed.append({"name": name, "input": args})
         raw_tool_calls.append({
             "id": tc.get("id", ""),
             "type": "function",
-            "function": {"name": tc.get("name", ""), "arguments": tc.get("arguments_buf", "{}")}
+            "function": {"name": name, "arguments": tc.get("arguments_buf", "{}")}
         })
 
     final_text = "".join(text_parts).strip()
