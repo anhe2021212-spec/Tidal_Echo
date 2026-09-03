@@ -1274,6 +1274,10 @@
     font-family: var(--font-en), var(--font-cn); font-size:12.5px;
     color: var(--text-soft); font-variant-numeric: tabular-nums;
   }
+  .param-unit{
+    flex:0 0 auto; font-size:11px; color: var(--text-soft); opacity:.8;
+    white-space:nowrap;
+  }
   .param-slider:disabled{
     opacity:.45; cursor:not-allowed;
   }
@@ -2463,17 +2467,17 @@
           <div class="config-field-label">沉默多久后考虑发 <i class="info-i" title="你超过这个时长没发消息，AI 才会开始考虑要不要主动开口。单位：小时。">i</i></div>
           <div class="param-slider-row">
             <input id="proactiveIdleInput" class="param-slider" type="range" min="1" max="12" step="1" value="3" aria-label="沉默时长" oninput="syncParamVal(this)">
-            <span class="param-val" id="proactiveIdleInputVal">3</span>
+            <span class="param-val" id="proactiveIdleInputVal">3</span><span class="param-unit">小时</span>
           </div>
           <div class="config-field-label">发送冷却 <i class="info-i" title="成功主动发出一条后，至少隔这么久才允许再发，防止连续打扰。单位：小时。">i</i></div>
           <div class="param-slider-row">
             <input id="proactiveCooldownInput" class="param-slider" type="range" min="2" max="24" step="1" value="4" aria-label="发送冷却" oninput="syncParamVal(this)">
-            <span class="param-val" id="proactiveCooldownInputVal">4</span>
+            <span class="param-val" id="proactiveCooldownInputVal">4</span><span class="param-unit">小时</span>
           </div>
           <div class="config-field-label">每天最多发几条 <i class="info-i" title="按你的本地时区计一天，超过上限当天不再主动发。">i</i></div>
           <div class="param-slider-row">
             <input id="proactiveMaxDayInput" class="param-slider" type="range" min="1" max="10" step="1" value="3" aria-label="每日上限" oninput="syncParamVal(this)">
-            <span class="param-val" id="proactiveMaxDayInputVal">3</span>
+            <span class="param-val" id="proactiveMaxDayInputVal">3</span><span class="param-unit">条</span>
           </div>
           <div class="config-field-label">静默时段 <i class="info-i" title="这段时间内 AI 不会主动发消息（比如夜里）。跨午夜也是允许的：23:00 ~ 09:00 表示晚上 11 点到次日早上 9 点之间保持安静。">i</i></div>
           <div class="param-slider-row" style="gap:8px">
@@ -3747,8 +3751,9 @@ function renderProactiveStatus(p){
   else if (p && p.next_attempt_at) parts.push(`下次尝试：${fmtExportTs(p.next_attempt_at)}`);
   proactiveConfigHint.textContent = parts.join(" · ") || "尚未发送过主动消息";
 }
-async function loadProactiveConfig(){
-  if (USE_MOCK || !secret){ renderProactiveStatus(null); return; }
+async function loadProactiveConfig(opts){
+  const keepHint = !!(opts && opts.keepHint);
+  if (USE_MOCK || !secret){ if (!keepHint) renderProactiveStatus(null); return; }
   try{
     const r = await fetch(`${API_BASE}/app/loop_config`, { headers: authHeaders() });
     if (!r.ok) return;
@@ -3762,10 +3767,10 @@ async function loadProactiveConfig(){
     if (proactiveQuietStartInput) proactiveQuietStartInput.value = p.quiet_start || "23:00";
     if (proactiveQuietEndInput) proactiveQuietEndInput.value = p.quiet_end || "09:00";
     if (proactiveTzSelect) proactiveTzSelect.value = p.tz || "Asia/Shanghai";
-    renderProactiveStatus(p);
+    if (!keepHint) renderProactiveStatus(p);
     updateConfigEntryStatus();
   }catch(_){
-    if (proactiveConfigHint) proactiveConfigHint.textContent = "暂时无法读取主动消息配置";
+    if (!keepHint && proactiveConfigHint) proactiveConfigHint.textContent = "暂时无法读取主动消息配置";
   }
 }
 [proactiveIdleInput, proactiveCooldownInput, proactiveMaxDayInput].forEach(sl => {
@@ -4090,6 +4095,10 @@ async function loadLoopConfig(){
     if (apiConfigHint) apiConfigHint.textContent = "暂时无法读取 API 配置";
   }
 }
+function buzz(ms){
+  /* 轻震动反馈：Android PWA 支持 navigator.vibrate；iOS 不支持则静默跳过 */
+  try{ if (navigator.vibrate) navigator.vibrate(ms); }catch(_){}
+}
 async function saveLoopConfig(payload, hint){
   if (USE_MOCK || !secret) return false;
   try{
@@ -4100,7 +4109,8 @@ async function saveLoopConfig(payload, hint){
       throw new Error(detail || "save " + r.status);
     }
     savedLoopConfig = await r.json();
-    if (hint) hint.textContent = "已保存，API 已启用";
+    if (hint) hint.textContent = "已保存 ✓";
+    buzz(12);
     renderApiList();
     renderMcpList();
     updateConfigEntryStatus();
@@ -4150,8 +4160,8 @@ proactiveSaveBtn?.addEventListener("click", async () => {
     quiet_end: (proactiveQuietEndInput && proactiveQuietEndInput.value) || "09:00",
     tz: (proactiveTzSelect && proactiveTzSelect.value) || "Asia/Shanghai",
   }};
-  const ok = await saveLoopConfig(payload, null);
-  if (ok) await loadProactiveConfig();
+  const ok = await saveLoopConfig(payload, proactiveConfigHint);
+  if (ok) await loadProactiveConfig({ keepHint: true });
 });
 
 /* ════════════ 数据管理：导出 / 清空窗口 / 清本机缓存 ════════════ */
