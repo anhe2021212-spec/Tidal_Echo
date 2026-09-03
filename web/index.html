@@ -2220,32 +2220,32 @@
         <div class="config-fields" id="modelParamsFields">
           <div class="config-field-label">Temperature <i class="info-i" title="越高越随机，越低越确定。推荐 0.7">i</i></div>
           <div class="param-slider-row">
-            <input id="temperatureInput" class="param-slider" type="range" min="0" max="2" step="0.05" value="0.7" aria-label="Temperature">
-            <span class="param-val" id="temperatureVal">0.7</span>
+            <input id="temperatureInput" class="param-slider" type="range" min="0" max="2" step="0.05" value="0.7" aria-label="Temperature" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <span class="param-val" id="temperatureInputVal">0.7</span>
           </div>
           <div class="config-field-label">Top P <i class="info-i" title="核采样概率，通常与 temperature 二选一调节。推荐 1.0">i</i></div>
           <div class="param-slider-row">
-            <input id="topPInput" class="param-slider" type="range" min="0" max="1" step="0.05" value="1.0" aria-label="Top P">
-            <span class="param-val" id="topPVal">1.0</span>
+            <input id="topPInput" class="param-slider" type="range" min="0" max="1" step="0.05" value="1.0" aria-label="Top P" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <span class="param-val" id="topPInputVal">1.0</span>
           </div>
           <div class="config-field-label">上下文消息数量 <i class="info-i" title="每次请求携带多少条历史消息（含双方）">i</i></div>
           <div class="param-slider-row">
-            <input id="historyNInput" class="param-slider" type="range" min="0" max="200" step="1" value="24" aria-label="上下文消息数量">
-            <span class="param-val" id="historyNVal">24</span>
+            <input id="historyNInput" class="param-slider" type="range" min="0" max="100" step="1" value="24" aria-label="上下文消息数量" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <span class="param-val" id="historyNInputVal">24</span>
           </div>
           <div class="config-field-label">最大 Token 数 <i class="info-i" title="单次回复最多生成多少 token">i</i></div>
           <div class="param-slider-row">
-            <input id="maxTokensInput" class="param-slider" type="range" min="100" max="32000" step="100" value="2000" aria-label="最大 Token 数">
-            <span class="param-val" id="maxTokensVal">2000</span>
+            <input id="maxTokensInput" class="param-slider" type="range" min="512" max="32768" step="512" value="2000" aria-label="最大 Token 数" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <span class="param-val" id="maxTokensInputVal">2000</span>
           </div>
           <div class="config-field-label">思考预算（Thinking Budget）<i class="info-i" title="Anthropic extended thinking 模式下，给模型的思考 token 预算。0 表示关闭。">i</i></div>
           <div class="param-slider-row">
-            <input id="thinkingBudgetInput" class="param-slider" type="range" min="0" max="32000" step="500" value="0" aria-label="思考预算">
-            <span class="param-val" id="thinkingBudgetVal">0</span>
+            <input id="thinkingBudgetInput" class="param-slider" type="range" min="0" max="32768" step="1024" value="0" aria-label="思考预算" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
+            <span class="param-val" id="thinkingBudgetInputVal">0</span>
           </div>
         </div>
         <div class="config-actions"><button class="config-action primary" id="modelParamsSaveBtn" type="button">保存参数</button></div>
-        <div class="push-hint" id="modelParamsConfigHint"></div>
+        <div class="push-hint" id="modelParamsConfigHint">调完点「保存参数」，对之后的新消息生效</div>
       </section>
 
       <!-- / 上下文阈值假按键已移除 -->
@@ -3368,19 +3368,19 @@ function setBrainUi(target){
     : "现在由 Claude Code channel 接消息";
 }
 
+function syncParamVal(sl){
+  const valEl = document.getElementById(sl.id + "Val");
+  if (valEl) valEl.textContent = sl.value;
+}
 function initParamSliders(){
   document.querySelectorAll("#modelParamsFields input.param-slider").forEach(sl => {
-    sl.addEventListener("input", () => {
-      const valEl = document.getElementById(sl.id + "Val");
-      if (valEl) valEl.textContent = sl.value;
-    });
+    sl.addEventListener("input", () => syncParamVal(sl));
   });
 }
 function setParamSlider(el, value, fallback){
   if (!el) return;
   el.value = (value != null && value !== "") ? value : fallback;
-  const valEl = document.getElementById(el.id + "Val");
-  if (valEl) valEl.textContent = el.value;
+  syncParamVal(el);
 }
 initParamSliders();
 

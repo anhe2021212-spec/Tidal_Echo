@@ -360,12 +360,12 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
             pass
     if "max_tokens" in body:
         try:
-            cfg["max_tokens"] = max(100, min(32000, int(body["max_tokens"])))
+            cfg["max_tokens"] = max(100, min(32768, int(body["max_tokens"])))
         except Exception:
             pass
     if "thinking_budget" in body:
         try:
-            cfg["thinking_budget"] = max(0, min(32000, int(body["thinking_budget"])))
+            cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
         except Exception:
             pass
     if isinstance(body.get("main_chain"), list):
