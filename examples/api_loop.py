@@ -850,6 +850,7 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
         last_out = out
         matches = list(_TOOL_CALL_RE.finditer(text))
         if not matches:
+            print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, text_preview={text[:150]!r}")
             break
         for m in matches:
             try:
@@ -1144,13 +1145,26 @@ async def loop_debug_chat(request: Request):
         params = await request.json()
     except Exception:
         pass
-    route = main_chain()[0] if main_chain() else None
+    chain = main_chain()
+    try:
+        route_index = max(0, int(params.get("route_index") or 0))
+    except Exception:
+        route_index = 0
+    route = chain[route_index] if 0 <= route_index < len(chain) else (chain[0] if chain else None)
     if not route:
         raise HTTPException(status_code=503, detail="no main_chain configured")
     prompt = str(params.get("prompt") or params.get("text") or "hello")
-    with_tools = bool(params.get("with_tools", False))
+    minimal_tool = bool(params.get("minimal_tool", False))
+    with_tools = bool(params.get("with_tools", False)) or minimal_tool
     tools: list[dict[str, Any]] = []
-    if with_tools:
+    if minimal_tool:
+        # 最小复现:只发一个纯 ASCII 名、空参数的匿名工具,用来判断中转端是否支持原生 tools
+        tools = [{"type": "function", "function": {
+            "name": "get_time",
+            "description": "Return the current date and time.",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+    elif with_tools:
         tools = await mcp_tools()
     messages = build_messages(prompt, before_id=None, session_id="debug", use_context=False)
     body: dict[str, Any] = {"model": route["model"], "messages": messages, "temperature": TEMPERATURE, "max_tokens": 200, "stream": False}
@@ -1169,7 +1183,7 @@ async def loop_debug_chat(request: Request):
         resp_body = resp.json()
     except Exception:
         resp_body = resp.text[:2000]
-    return {"status": resp.status_code, "url": url, "request_model": body["model"], "tools_count": len(tools), "tool_names": [t["function"]["name"] for t in body.get("tools", [])], "response_headers": dict(resp.headers), "response_body": resp_body}
+    return {"status": resp.status_code, "route_index": route_index, "url": url, "request_model": body["model"], "tools_count": len(tools), "tool_names": [t["function"]["name"] for t in body.get("tools", [])], "response_headers": dict(resp.headers), "response_body": resp_body}
 
 
 @app.get("/loop/debug-mcp")
