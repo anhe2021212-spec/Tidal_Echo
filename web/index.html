@@ -2138,13 +2138,9 @@
         <div class="push-hint" id="pushHint"></div>
       </section>
 
-      <!-- AI body routing -->
+      <!-- AI body 状态（只读：部署为服务器 API loop） -->
       <section class="settings-card">
-        <div class="settings-label">联系 Claude <i class="info-i" title="Desktop＝Claude Code channel；API＝服务器上的 OpenAI-compatible loop。同一时刻只让一个身体接消息，避免双答。">i</i></div>
-        <div class="segmented" id="brainSeg" role="group" aria-label="联系方式">
-          <button type="button" data-val="desktop">Desktop</button>
-          <button type="button" data-val="loop">API</button>
-        </div>
+        <div class="settings-label">连接状态 <i class="info-i" title="当前由服务器上的 API loop 接消息">i</i></div>
         <div class="push-hint" id="brainHint"></div>
       </section>
 
@@ -2232,29 +2228,6 @@
         </div>
         <div class="config-actions"><button class="config-action primary" id="modelParamsSaveBtn" type="button">保存参数</button></div>
         <div class="push-hint" id="modelParamsConfigHint"></div>
-      </section>
-
-      <!-- 模型选择（占位 · 假按键，以后接真切换）-->
-      <section class="settings-card">
-        <div class="settings-label">模型选择</div>
-        <div class="segmented" id="modelSeg" role="group" aria-label="模型选择">
-          <button type="button" data-val="Opus 4.6">Opus 4.6</button>
-          <button type="button" data-val="Opus 4.7" class="active">Opus 4.7</button>
-          <button type="button" data-val="Opus 4.8">Opus 4.8</button>
-          <button type="button" data-val="Fable 5">Fable 5</button>
-        </div>
-      </section>
-
-      <!-- effort（占位 · 假按键）-->
-      <section class="settings-card">
-        <div class="settings-label">effort <i class="info-i" title="推理强度：越高越细，耗时越长">i</i></div>
-        <div class="segmented" id="effortSeg" role="group" aria-label="effort">
-          <button type="button" data-val="low">low</button>
-          <button type="button" data-val="medium">medium</button>
-          <button type="button" data-val="high">high</button>
-          <button type="button" data-val="xhigh" class="active">xhigh</button>
-          <button type="button" data-val="max">max</button>
-        </div>
       </section>
 
       <!-- 上下文阈值（占位 · 假按键）-->
@@ -2499,12 +2472,12 @@ const peerNameEl = $("#peerName"), profilePanel = $("#profilePanel");
 const profileClose = $("#profileClose"), moreBtn = $("#moreBtn");
 const profileAvatarBtn = $("#profileAvatarBtn"), profileNameEl = $("#profileName");
 const profileNameInput = $("#profileNameInput"), profileNameEdit = $("#profileNameEdit");
-const modelSeg = $("#modelSeg"), effortSeg = $("#effortSeg"), contextSlider = $("#contextSlider");
+const contextSlider = $("#contextSlider");
 const resetRow = $("#resetRow"), swapRow = $("#swapRow"), resumeRow = $("#resumeRow");
 const statusCopy = $("#statusCopy"), statusSidEl = $("#statusSid"), statusUsedEl = $("#statusUsed");
 const sessionBtn = $("#sessionBtn"), sessionPop = $("#sessionPop"), sessionList = $("#sessionList"), sessionNewBtn = $("#sessionNewBtn");
 const terminalBtn = $("#terminalBtn"), terminalPanel = $("#terminalPanel"), terminalBack = $("#terminalBack"), terminalLog = $("#terminalLog"), terminalForm = $("#terminalForm"), terminalInput = $("#terminalInput"), terminalSession = $("#terminalSession");
-const brainSeg = $("#brainSeg"), brainHint = $("#brainHint");
+const brainHint = $("#brainHint");
 const apiUrlInput = $("#apiUrlInput"), apiKeyInput = $("#apiKeyInput"), apiModelInput = $("#apiModelInput"), apiHeadersInput = $("#apiHeadersInput"), apiSaveBtn = $("#apiSaveBtn"), apiDebugBtn = $("#apiDebugBtn"), apiDebugOutput = $("#apiDebugOutput"), apiConfigHint = $("#apiConfigHint");
 const mcpNameInput = $("#mcpNameInput"), mcpUrlInput = $("#mcpUrlInput"), mcpTokenInput = $("#mcpTokenInput"), mcpEnabledInput = $("#mcpEnabledInput"), mcpSaveBtn = $("#mcpSaveBtn"), mcpDebugBtn = $("#mcpDebugBtn"), mcpToolCallBtn = $("#mcpToolCallBtn"), mcpDebugOutput = $("#mcpDebugOutput"), mcpConfigHint = $("#mcpConfigHint");
 const configHubView = $("#configHubView"), apiConfigView = $("#apiConfigView"), mcpConfigView = $("#mcpConfigView"), apiList = $("#apiList"), mcpList = $("#mcpList");
@@ -3378,8 +3351,12 @@ function wireSegmented(seg, storeKey){
     try{ localStorage.setItem(storeKey, b.dataset.val); }catch(_){}
   });
 }
-wireSegmented(modelSeg, "companion_pick_model");
-wireSegmented(effortSeg, "companion_pick_effort");
+function setBrainUi(target){
+  const t = target === "loop" ? "loop" : "desktop";
+  if (brainHint) brainHint.textContent = t === "loop"
+    ? "现在由服务器 API loop 接消息"
+    : "现在由 Claude Code channel 接消息";
+}
 
 if (contextSlider){
   const savedContext = localStorage.getItem("companion_pick_context");
@@ -3387,13 +3364,6 @@ if (contextSlider){
   contextSlider.addEventListener("input", () => { try{ localStorage.setItem("companion_pick_context", contextSlider.value); }catch(_){} });
 }
 
-function setBrainUi(target){
-  const t = target === "loop" ? "loop" : "desktop";
-  if (brainSeg) brainSeg.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.val === t));
-  if (brainHint) brainHint.textContent = t === "loop"
-    ? "现在由服务器 API loop 接消息"
-    : "现在由 Claude Code channel 接消息";
-}
 async function loadBrain(){
   if (USE_MOCK || !secret){ setBrainUi("desktop"); return; }
   try{
@@ -3416,16 +3386,9 @@ async function saveBrain(target){
     if (!r.ok) throw new Error("brain " + r.status);
     const d = await r.json();
     setBrainUi(d.target || target);
-    showToast((d.target || target) === "loop" ? "已切到 API" : "已切到 Desktop");
   }catch(_){
-    showToast("切换失败");
+    showToast("切换接收方失败");
   }
-}
-if (brainSeg){
-  brainSeg.addEventListener("click", e => {
-    const b = e.target.closest("button[data-val]");
-    if (b) saveBrain(b.dataset.val);
-  });
 }
 
 let savedLoopConfig = null;
