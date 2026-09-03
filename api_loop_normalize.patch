@@ -1,0 +1,293 @@
+diff --git a/examples/api_loop.py b/examples/api_loop.py
+index e7b89a5..d44d035 100644
+--- a/examples/api_loop.py
++++ b/examples/api_loop.py
+@@ -429,6 +429,115 @@ async def relay_out(payload: dict[str, Any]) -> tuple[bool, Any]:
+     return resp.status_code < 300, body
+ 
+ 
++# ── 归一化层 ──────────────────────────────────────────────────────────────
++# 目标：PWA/relay 只认一套固定格式，任何一家 LLM API 的字段差异都在这里被
++# “翻译”成统一字段。以后接入新 API，只需要在下面两处补对应字段名，PWA 不用改。
++
++def normalize_stream_event(ev: dict[str, Any]) -> dict[str, Any]:
++    """把一次 SSE 流事件翻译成中立格式。
++
++    返回: {"content", "thinking", "tool_calls", "usage", "finish_reason"}
++      - content:      正文增量(字符串,可能为空)
++      - thinking:     思考/推理增量(字符串,可能为空)
++      - tool_calls:   工具调用增量(list),每项为
++                      {"index","id","name","arguments"}; index<0 表示独立一次调用
++      - usage / finish_reason: 透传
++    """
++    usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else None
++    choice = (ev.get("choices") or [{}])[0]
++    delta = choice.get("delta") or {}
++    finish_reason = choice.get("finish_reason")
++
++    content = delta.get("content") or ""
++
++    # 思考字段：各家命名不同，统一归到 thinking
++    thinking = ""
++    if delta.get("reasoning_content"):
++        thinking = delta["reasoning_content"]          # DeepSeek / Qwen / GLM
++    elif delta.get("type") == "thinking":
++        thinking = delta.get("thinking") or delta.get("content") or ""   # Anthropic 兼容端点
++    elif delta.get("thinking"):
++        thinking = delta["thinking"]                   # OpenAI 扩展
++    elif ev.get("thinking"):
++        thinking = ev["thinking"]                      # 顶层自定义
++
++    # 工具调用：两种主要形态统一归到 tool_calls
++    tool_calls: list[dict[str, Any]] = []
++    if delta.get("tool_calls"):
++        for tc in delta["tool_calls"]:                 # OpenAI 流式(分段下发 name/arguments)
++            fn = tc.get("function") or {}
++            tool_calls.append({
++                "index": tc.get("index", 0),
++                "id": tc.get("id") or "",
++                "name": fn.get("name") or "",
++                "arguments": fn.get("arguments") or "",
++            })
++    elif delta.get("type") == "tool_use":              # Anthropic:一次给全 name + input
++        tool_calls.append({
++            "index": -1,
++            "id": delta.get("id") or "",
++            "name": delta.get("name") or "",
++            "arguments": json.dumps(delta.get("input") or {}, ensure_ascii=False),
++        })
++
++    return {
++        "content": content,
++        "thinking": thinking,
++        "tool_calls": tool_calls,
++        "role": delta.get("role") or "",
++        "usage": usage,
++        "finish_reason": finish_reason,
++    }
++
++
++def accumulate_tool_calls(buf: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> None:
++    """把增量 tool_calls 合并进缓冲,按 index 对齐(OpenAI 分段)或独立追加(Anthropic)。"""
++    for tc in incoming:
++        idx = tc.get("index", 0)
++        if isinstance(idx, int) and idx >= 0:
++            while len(buf) <= idx:
++                buf.append({"id": "", "name": "", "arguments_buf": ""})
++            slot = buf[idx]
++            if tc.get("id"):
++                slot["id"] = tc["id"]
++            if tc.get("name"):
++                slot["name"] = tc["name"]
++            if tc.get("arguments"):
++                slot["arguments_buf"] += tc["arguments"]
++        else:
++            buf.append({
++                "id": tc.get("id") or "",
++                "name": tc.get("name") or "",
++                "arguments_buf": tc.get("arguments") or "",
++            })
++
++
++def finalize_tool_calls(buf: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
++    """把缓冲转成两套统一结构:(供 PWA/relay 展示的 meta 结构, 供回填模型的 raw 结构)。"""
++    parsed: list[dict[str, Any]] = []
++    raw: list[dict[str, Any]] = []
++    for tc in buf:
++        name = (tc.get("name") or "").strip()
++        if not name:
++            continue  # 跳过流式解析产生的空 name 幽灵 tool_call
++        try:
++            args = json.loads(tc.get("arguments_buf") or "{}")
++        except (json.JSONDecodeError, TypeError):
++            args = {}
++        parsed.append({"name": name, "input": args})
++        raw.append({
++            "id": tc.get("id", ""),
++            "type": "function",
++            "function": {"name": name, "arguments": tc.get("arguments_buf", "{}")},
++        })
++    return parsed, raw
++
++
++def merge_thinking(parts: list[str]) -> list[dict[str, Any]] | None:
++    merged = "".join(parts).strip()
++    return [{"content": merged}] if merged else None
++
++
+ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sink) -> dict[str, Any]:
+     body = {
+         "model": route["model"],
+@@ -445,8 +554,8 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
+         body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+     text_parts: list[str] = []
+     usage: dict[str, Any] = {}
+-    thinking_blocks: list[dict[str, Any]] = []
+-    tool_calls: list[dict[str, Any]] = []
++    thinking_parts: list[str] = []
++    tool_calls_buf: list[dict[str, Any]] = []
+     req_headers = {"Authorization": f"Bearer {route['key']}", "Content-Type": "application/json"}
+     for hk, hv in (route.get("headers") or {}).items():
+         if str(hk) and str(hv):
+@@ -478,53 +587,22 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
+                     ev = json.loads(data)
+                 except json.JSONDecodeError:
+                     continue
+-                if isinstance(ev.get("usage"), dict):
+-                    usage = ev["usage"]
+-                delta = (((ev.get("choices") or [{}])[0]).get("delta") or {})
+-                chunk = delta.get("content") or ""
+-                if chunk:
+-                    text_parts.append(chunk)
+-                    await sink(chunk)
+-                
+-                # DeepSeek/OpenAI reasoning_content field (KEY FIELD!)
+-                if delta.get("reasoning_content"):
+-                    thinking_blocks.append({"content": delta.get("reasoning_content") or ""})
+-                # Anthropic thinking format (delta.type == "thinking")
+-                elif delta.get("type") == "thinking":
+-                    thinking_blocks.append({"content": delta.get("thinking") or delta.get("content") or ""})
+-                # OpenAI extended thinking format (delta.thinking exists)
+-                elif delta.get("thinking"):
+-                    thinking_blocks.append({"content": delta.get("thinking") or ""})
+-                # Custom format: top-level thinking field
+-                elif ev.get("thinking"):
+-                    thinking_blocks.append({"content": ev.get("thinking") or ""})
+-                
+-                # OpenAI tool_calls format (streamed: name/arguments arrive in chunks)
+-                if delta.get("tool_calls"):
+-                    for tc in delta.get("tool_calls", []):
+-                        idx = tc.get("index", 0)
+-                        func = tc.get("function") or {}
+-                        while len(tool_calls) <= idx:
+-                            tool_calls.append({"name": "", "arguments_buf": ""})
+-                        if func.get("name"):
+-                            tool_calls[idx]["name"] = func["name"]
+-                        if func.get("arguments"):
+-                            tool_calls[idx]["arguments_buf"] += func["arguments"]
+-                # Anthropic tool_use format
+-                elif delta.get("type") == "tool_use":
+-                    tool_calls.append({"name": delta.get("name") or "", "arguments_buf": json.dumps(delta.get("input") or {})})
+-    final_tool_calls = []
+-    for tc in tool_calls:
+-        try:
+-            args = json.loads(tc.get("arguments_buf") or "{}")
+-        except (json.JSONDecodeError, TypeError):
+-            args = {}
+-        final_tool_calls.append({"name": tc.get("name", ""), "input": args})
++                n = normalize_stream_event(ev)
++                if n["usage"]:
++                    usage = n["usage"]
++                if n["content"]:
++                    text_parts.append(n["content"])
++                    await sink(n["content"])
++                if n["thinking"]:
++                    thinking_parts.append(n["thinking"])
++                if n["tool_calls"]:
++                    accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
++    final_tool_calls, _ = finalize_tool_calls(tool_calls_buf)
+     final_text = "".join(text_parts).strip()
+     return {
+         "text": final_text,
+         "usage": usage,
+-        "thinking": thinking_blocks if thinking_blocks else None,
++        "thinking": merge_thinking(thinking_parts),
+         "tool_calls": final_tool_calls if final_tool_calls else None
+     }
+ 
+@@ -642,7 +720,7 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
+             req_headers[str(hk)] = str(hv)
+ 
+     text_parts: list[str] = []
+-    thinking_blocks: list[dict[str, Any]] = []
++    thinking_parts: list[str] = []
+     tool_calls_buf: list[dict[str, Any]] = []
+     usage: dict[str, Any] = {}
+     raw_msg: dict[str, Any] = {}
+@@ -679,60 +757,23 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
+                     ev = json.loads(data_str)
+                 except json.JSONDecodeError:
+                     continue
+-                if isinstance(ev.get("usage"), dict):
+-                    usage = ev["usage"]
+-                choice0 = (ev.get("choices") or [{}])[0]
+-                if choice0.get("finish_reason"):
+-                    finish_reason_val = choice0["finish_reason"]
+-                delta = (choice0.get("delta") or {})
+-                if delta.get("role"):
+-                    raw_msg["role"] = delta["role"]
+-                chunk = delta.get("content") or ""
+-                if chunk:
+-                    text_parts.append(chunk)
+-                if delta.get("reasoning_content"):
+-                    thinking_blocks.append({"content": delta["reasoning_content"]})
+-                elif delta.get("type") == "thinking":
+-                    thinking_blocks.append({"content": delta.get("thinking") or delta.get("content") or ""})
+-                elif delta.get("thinking"):
+-                    thinking_blocks.append({"content": delta["thinking"]})
+-                elif ev.get("thinking"):
+-                    thinking_blocks.append({"content": ev["thinking"]})
+-                if delta.get("tool_calls"):
+-                    for tc in delta["tool_calls"]:
+-                        idx = tc.get("index", 0)
+-                        func = tc.get("function") or {}
+-                        while len(tool_calls_buf) <= idx:
+-                            tool_calls_buf.append({"id": "", "name": "", "arguments_buf": ""})
+-                        if tc.get("id"):
+-                            tool_calls_buf[idx]["id"] = tc["id"]
+-                        if func.get("name"):
+-                            tool_calls_buf[idx]["name"] = func["name"]
+-                        if func.get("arguments"):
+-                            tool_calls_buf[idx]["arguments_buf"] += func["arguments"]
+-
+-    merged_thinking = []
+-    if thinking_blocks:
+-        merged = "".join(b.get("content", "") for b in thinking_blocks)
+-        if merged.strip():
+-            merged_thinking.append({"content": merged})
+-
+-    tool_calls_parsed: list[dict[str, Any]] = []
+-    raw_tool_calls = []
+-    for tc in tool_calls_buf:
+-        name = (tc.get("name") or "").strip()
+-        if not name:
+-            continue  # 跳过流式解析产生的空 name 幽灵 tool_call，避免下发 "MCP tool is not configured"
+-        try:
+-            args = json.loads(tc.get("arguments_buf") or "{}")
+-        except (json.JSONDecodeError, TypeError):
+-            args = {}
+-        tool_calls_parsed.append({"name": name, "input": args})
+-        raw_tool_calls.append({
+-            "id": tc.get("id", ""),
+-            "type": "function",
+-            "function": {"name": name, "arguments": tc.get("arguments_buf", "{}")}
+-        })
++                n = normalize_stream_event(ev)
++                if n["usage"]:
++                    usage = n["usage"]
++                if n["finish_reason"]:
++                    finish_reason_val = n["finish_reason"]
++                if n["role"]:
++                    raw_msg["role"] = n["role"]
++                if n["content"]:
++                    text_parts.append(n["content"])
++                if n["thinking"]:
++                    thinking_parts.append(n["thinking"])
++                if n["tool_calls"]:
++                    accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
++
++    merged_thinking = merge_thinking(thinking_parts)
++
++    tool_calls_parsed, raw_tool_calls = finalize_tool_calls(tool_calls_buf)
+ 
+     final_text = "".join(text_parts).strip()
+     if "role" not in raw_msg:
+@@ -740,7 +781,7 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
+     raw_msg["content"] = final_text
+     if raw_tool_calls:
+         raw_msg["tool_calls"] = raw_tool_calls
+-    print(f"[api_loop:complete_chat] has_reasoning_content={bool(thinking_blocks)}, has_tool_calls={bool(tool_calls_parsed)}, text_len={len(final_text)}, finish_reason={finish_reason_val}")
++    print(f"[api_loop:complete_chat] has_reasoning_content={bool(thinking_parts)}, has_tool_calls={bool(tool_calls_parsed)}, text_len={len(final_text)}, finish_reason={finish_reason_val}")
+     return {
+         "text": final_text,
+         "message": raw_msg,
