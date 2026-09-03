@@ -16,6 +16,25 @@ All private values live in env/.env. This file contains no domain, key, or
 personal identity.
 """
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 区块导航(按文件内出现顺序排列;要修改某功能时,按区块名搜索即可定位):
+#   1. 环境与常量
+#   2. 基础工具:路由/时间/脱敏/配置读写
+#   3. 主动消息(proactive) · 配置与状态推导
+#   4. 配置项:模型链/人设/注入/采样参数
+#   5. 会话窗口(sessions)管理
+#   6. 上下文构建:历史/附件/消息组装
+#   7. 公开配置接口(读/写 loop_config)
+#   8. relay 回写
+#   9. 归一化层
+#  10. MCP 客户端:工具发现与调用
+#  11. 提示词工具模式(<tool_call> 文本协议)
+#  12. 模型调用主入口:多模型 fallback
+#  13. 主动消息(proactive) · 调度循环
+#  14. 入站消息处理(handle_ingest)
+#  15. FastAPI 路由:健康/配置/会话/聊天/调试
+# ═══════════════════════════════════════════════════════════════════════════
+
 from __future__ import annotations
 
 import asyncio
@@ -36,6 +55,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 
 
+# ── 环境与常量 ──────────────────────────────────────────────────────────────
 def load_dotenv(path: Path) -> None:
     try:
         for raw in path.read_text(encoding="utf-8").splitlines():
@@ -85,6 +105,7 @@ if not PERSONA:
     )
 
 
+# ── 基础工具:路由/时间/脱敏/配置读写 ─────────────────────────────────────────
 def env_routes() -> list[dict[str, Any]]:
     routes: list[dict[str, Any]] = []
     for suffix in ("", "_2", "_3", "_4"):
@@ -138,7 +159,7 @@ def save_config(cfg: dict[str, Any]) -> None:
     tmp.replace(LOOP_CONFIG)
 
 
-# ── 主动消息(proactive)────────────────────────────────────────────────────
+# ── 主动消息(proactive) · 配置与状态推导 ───────────────────────────────────
 # AI 在用户沉默一段时间后,基于上下文主动发起一句自然的话。
 # 所有设置存在 LOOP_CONFIG["proactive"],PWA 设置页可开关/调节;
 # 运行状态(上次发送/今日条数)从 relay.db 的消息里推导,容器重启也不会重复轰炸。
@@ -299,6 +320,7 @@ def proactive_public() -> dict[str, Any]:
     return out
 
 
+# ── 配置项:模型链/人设/注入/采样参数 ─────────────────────────────────────────
 def main_chain() -> list[dict[str, str]]:
     cfg = load_config()
     configured = cfg.get("main_chain")
@@ -385,6 +407,7 @@ def thinking_budget() -> int:
         return 0
 
 
+# ── 会话窗口(sessions)管理 ─────────────────────────────────────────────────
 def session_rows() -> list[dict[str, Any]]:
     rows = load_config().get("sessions")
     if not isinstance(rows, list):
@@ -463,6 +486,7 @@ def delete_session(session_id: str) -> dict[str, Any]:
     return save_sessions(remaining, active)
 
 
+# ── 上下文构建:历史/附件/消息组装 ───────────────────────────────────────────
 def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[str, Any]]:
     path = Path(RELAY_DB)
     if not path.exists():
@@ -558,6 +582,7 @@ def build_messages(text: str, *, before_id: int | None = None, session_id: str =
     return messages
 
 
+# ── 公开配置接口(读/写 loop_config) ────────────────────────────────────────
 def mcp_servers() -> list[dict[str, Any]]:
     rows = load_config().get("mcp_servers")
     if not isinstance(rows, list):
@@ -736,6 +761,7 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
     return public_config()
 
 
+# ── relay 回写 ─────────────────────────────────────────────────────────────
 async def relay_out(payload: dict[str, Any]) -> tuple[bool, Any]:
     if not RELAY_SECRET:
         return False, "RELAY_SECRET missing"
@@ -932,6 +958,7 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
     }
 
 
+# ── MCP 客户端:工具发现与调用 ───────────────────────────────────────────────
 MCP_SESSIONS: dict[str, str] = {}
 MCP_REQUEST_ID = 0
 
@@ -1133,6 +1160,7 @@ async def execute_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[st
     raise RuntimeError("MCP tool is not configured")
 
 
+# ── 提示词工具模式(<tool_call> 文本协议) ────────────────────────────────────
 def _prompt_tools_block(tools: list[dict[str, Any]]) -> str:
     lines = [
         "TOOL CALLING PROTOCOL (strict):",
@@ -1279,6 +1307,7 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
     return last_out
 
 
+# ── 模型调用主入口:多模型 fallback ─────────────────────────────────────────
 async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False) -> dict[str, Any]:
     tried = []
     last_error = ""
@@ -1436,6 +1465,7 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
 
 
+# ── 主动消息(proactive) · 调度循环 ─────────────────────────────────────────
 async def _proactive_step() -> None:
     """主动消息的单次检查(约每 60 秒由 _proactive_loop 调用一次)。"""
     cfg = proactive_cfg()
@@ -1513,6 +1543,7 @@ async def _proactive_loop() -> None:
         await asyncio.sleep(PROACTIVE_CHECK_SECONDS)
 
 
+# ── 入站消息处理(handle_ingest) ────────────────────────────────────────────
 async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     stream_id = "api-" + uuid.uuid4().hex[:16]
     atts = [a for a in (attachments or []) if isinstance(a, dict)]
@@ -1571,6 +1602,7 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
     return {"ok": ok, "relay": body, "api": meta}
 
 
+# ── FastAPI 路由:健康/配置/会话/聊天/调试 ───────────────────────────────────
 app = FastAPI(title="companion-api-loop")
 
 _proactive_task: asyncio.Task | None = None
