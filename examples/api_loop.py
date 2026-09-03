@@ -236,6 +236,7 @@ def session_rows() -> list[dict[str, Any]]:
                 "created_at": item.get("created_at") or "",
                 "pinned": bool(item.get("pinned", False)),
             })
+    out.sort(key=lambda r: 0 if r.get("pinned") else 1)  # 置顶的排前面(稳定排序,其余保持原序)
     return out
 
 
@@ -286,6 +287,17 @@ def patch_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="session not found")
     active = session_id if body.get("active") else None
     return save_sessions(rows, active)
+
+
+def delete_session(session_id: str) -> dict[str, Any]:
+    rows = session_rows()
+    was_active = active_session_id() == session_id
+    remaining = [r for r in rows if r["id"] != session_id]
+    if len(remaining) == len(rows):
+        raise HTTPException(status_code=404, detail="session not found")
+    # 删除的是当前窗口时,自动切到最新一个剩余窗口;全删光则回到无会话状态。
+    active = (remaining[-1]["id"] if remaining else "") if was_active else None
+    return save_sessions(remaining, active)
 
 
 def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[str, Any]]:
@@ -1332,6 +1344,11 @@ async def loop_sessions_create(request: Request):
 @app.patch("/loop/sessions/{session_id}")
 async def loop_sessions_patch(session_id: str, request: Request):
     return patch_session(session_id, await request.json())
+
+
+@app.delete("/loop/sessions/{session_id}")
+async def loop_sessions_delete(session_id: str):
+    return delete_session(session_id)
 
 
 @app.post("/loop/chat")

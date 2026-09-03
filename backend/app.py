@@ -1039,6 +1039,12 @@ async def app_sessions_patch(session_id: str, request: Request):
     return loop_json(f"/loop/sessions/{urllib.parse.quote(session_id)}", method="PATCH", body=await request.json())
 
 
+@app.delete("/app/sessions/{session_id}")
+async def app_sessions_delete(session_id: str, request: Request):
+    check_auth(request)
+    return loop_json(f"/loop/sessions/{urllib.parse.quote(session_id)}", method="DELETE")
+
+
 WEB_DIR = Path(os.environ.get("RELAY_WEB_DIR", str(Path(__file__).parent.parent / "web")))
 if WEB_DIR.is_dir():
     from starlette.middleware.base import BaseHTTPMiddleware
