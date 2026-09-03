@@ -71,6 +71,7 @@
     --ref-height: 1672px;
     --font-en: "Cormorant Garamond", Georgia, serif;
     --font-cn: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+    --fs-scale: 1;  /* 聊天字号缩放，设置页可调 */
     --wall-light: url("chat-light.webp");
     --wall-harbor: url("chat-harbor.webp");
     --wall-default: var(--wall-light);
@@ -220,11 +221,14 @@
   }
   .topbar > *{ pointer-events: auto; }
   .peerpill{
+    position:absolute; left:50%; transform:translateX(-50%);
     display:flex; flex-direction:column; align-items:center; line-height:1.15;
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 0 110px;
+    padding: 0;
+    max-width: min(560px, calc(100% - 220px));
+    text-align:center;
   }
   .peerpill .name{
     font-family: "Songti SC", "Noto Serif SC", "STSong", "SimSun", serif;
@@ -233,6 +237,7 @@
     color: var(--text);
     letter-spacing: 0;
     text-shadow: 0 1px 18px rgba(255,255,255,0.3);
+    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   .peerpill .status{
     font-family: var(--font-en), var(--font-cn);
@@ -240,6 +245,7 @@
     color: var(--text-soft);
     margin-top: 4px;
     letter-spacing: 0;
+    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   .app[data-conn="reconnecting"] .peerpill .status{ color:#9a8061; }
   .peerpill .status.typing{
@@ -542,12 +548,12 @@
   }
 
   .bubble{
-    max-width: min(61vw, 506px);
+    max-width: min(85vw, 560px);
     padding: clamp(8px, 1.05vw, 12px) clamp(13px, 1.65vw, 18px) clamp(8px, 1.1vw, 13px);
     border-radius: var(--bubble-radius);
     position: relative;
     font-family: var(--font-cn);
-    font-size: clamp(14px, 1.55vw, 16px); line-height: 1.58;
+    font-size: calc(clamp(14px, 1.55vw, 16px) * var(--fs-scale, 1)); line-height: 1.58;
     word-wrap: break-word;
     overflow-wrap: break-word;
     animation: pop .24s cubic-bezier(.2,.8,.2,1) both;
@@ -618,7 +624,7 @@
   /* ── meta card: thinking + tool calls (Kelivo-inspired unified card above AI bubble) ── */
   .meta-card{
     width: 100%;
-    max-width: min(61vw, 506px);
+    max-width: min(85vw, 560px);
     border-radius: 14px;
     background: var(--bubble-ai-bg);
     box-shadow: 0 10px 28px rgba(78, 94, 108, 0.08);
@@ -632,7 +638,7 @@
     padding: 11px 14px;
     cursor: pointer;
     user-select: none;
-    font-size: 13.5px;
+    font-size: calc(13.5px * var(--fs-scale, 1));
     color: var(--text);
     border-bottom: 1px solid rgba(125,128,135,.08);
     transition: background .15s ease;
@@ -689,7 +695,7 @@
   }
   .meta-card-detail-section{ margin-top: 6px; }
   .meta-card-result-text{
-    font-size: 12.5px;
+    font-size: calc(12.5px * var(--fs-scale, 1));
     line-height: 1.65;
     color: var(--text);
     word-break: break-word;
@@ -727,8 +733,8 @@
     margin-bottom: clamp(18px, 2.8vw, 28px);
   }
   .think-block{
-    width: min(61vw, 506px);
-    max-width: min(61vw, 506px);
+    width: min(85vw, 560px);
+    max-width: min(85vw, 560px);
     color: var(--think-body);
     text-align: left;
     animation: pop .24s cubic-bezier(.2,.8,.2,1) both;
@@ -810,7 +816,7 @@
     margin: 0 auto clamp(16px, 2.6vw, 24px);
     color: var(--think-body);
     font-family: var(--font-cn);
-    font-size: clamp(12px, 1.25vw, 13.5px);
+    font-size: calc(clamp(12px, 1.25vw, 13.5px) * var(--fs-scale, 1));
     line-height: 1.72;
     text-align: center;
     white-space: normal;
@@ -1400,7 +1406,7 @@
       --header-h: 56px;
       --avatar-size: 32px;
     }
-    .peerpill{ padding: 0 142px 0 52px; }
+    .peerpill{ max-width: calc(100% - 200px); }
     .peerpill .name{ font-size: 18px; }
     .peerpill .status{ font-size: 12px; margin-top: 3px; }
     .backbtn{ left: 16px; top: calc(env(safe-area-inset-top) + 16px); width: 32px; height: 32px; }
@@ -1413,8 +1419,8 @@
     .row{ margin-top: 18px; }
     .row.grouped{ margin-top: 8px; }
     .row.ai{ padding-left: 42px; }
-    .bubble{ max-width: min(63vw, 520px); font-size: 13.5px; line-height: 1.56; padding: 8px 13px 8px; }
-    .meta-card{ max-width: min(63vw, 520px); }
+    .bubble{ max-width: min(86vw, 560px); font-size: calc(14.5px * var(--fs-scale, 1)); line-height: 1.56; padding: 8px 13px 8px; }
+    .meta-card{ max-width: min(86vw, 560px); }
     .meta{ font-size: 11px; margin-left: 8px; }
     .day{ font-size: 12px; }
     .new-divider{ font-size: 12px; margin: 14px 0 10px; }
@@ -1426,7 +1432,7 @@
     .emojibtn{ width: 28px; height: 28px; }
     .emojibtn svg{ width: 22px; height: 22px; }
     .row.think{ padding-left: 42px; padding-right: 0; }
-    .think-block{ width: min(63vw, 520px); max-width: min(63vw, 520px); }
+    .think-block{ width: min(86vw, 560px); max-width: min(86vw, 560px); }
     .think-block.open{ width: 100%; max-width: 100%; }
     .row.think.think-open{ padding-left: 0; padding-right: 0; }
     .think-caption{ font-size: 12.5px; letter-spacing: .07em; }
@@ -2343,6 +2349,15 @@
         <div class="segmented" id="themeSeg" role="group" aria-label="主题切换">
           <button type="button" data-val="light">珍珠</button>
           <button type="button" data-val="harbor">海港</button>
+        </div>
+      </section>
+
+      <!-- 字体大小 -->
+      <section class="settings-card">
+        <div class="settings-label">字体大小 <i class="info-i" title="调节聊天气泡文字的显示大小，只影响这台设备">i</i></div>
+        <div class="param-slider-row">
+          <input id="fontScaleInput" class="param-slider" type="range" min="0.8" max="1.6" step="0.05" value="1" aria-label="字体大小">
+          <span class="param-val" id="fontScaleInputVal">100%</span>
         </div>
       </section>
 
@@ -3712,6 +3727,30 @@ function syncParamVal(sl){
   const valEl = document.getElementById(sl.id + "Val");
   if (valEl) valEl.textContent = sl.value;
 }
+/* 聊天字号缩放:滑块 → CSS 变量,localStorage 持久化 */
+const FS_KEY = "companion_font_scale";
+function applyFontScale(v){
+  document.documentElement.style.setProperty("--fs-scale", v);
+  const valEl = document.getElementById("fontScaleInputVal");
+  if (valEl) valEl.textContent = Math.round(v * 100) + "%";
+  /* 字号变了 → 行高估值/测高缓存失效,重新按新字号渲染(启动期这些变量还在 TDZ,失败无碍) */
+  try{ _estCpl = 0; rowHeights.clear(); scheduleRender({ preserveAnchor: true }); }catch(_){}
+}
+function initFontScale(){
+  const sl = document.getElementById("fontScaleInput");
+  if (!sl) return;
+  let v = 1;
+  try{
+    const saved = parseFloat(localStorage.getItem(FS_KEY) || "1");
+    if (!isNaN(saved) && saved >= 0.8 && saved <= 1.6) v = saved;
+  }catch(_){}
+  sl.value = v;
+  applyFontScale(v);
+  sl.addEventListener("input", () => {
+    applyFontScale(parseFloat(sl.value) || 1);
+    try{ localStorage.setItem(FS_KEY, String(sl.value)); }catch(_){}
+  });
+}
 function initParamSliders(){
   document.querySelectorAll("#modelParamsFields input.param-slider").forEach(sl => {
     sl.addEventListener("input", () => syncParamVal(sl));
@@ -3828,6 +3867,7 @@ proactiveQuietEnabledInput?.addEventListener("change", syncProactiveQuietUi);
   if (sl) sl.addEventListener("input", () => syncParamVal(sl));
 });
 initParamSliders();
+initFontScale();
 
 async function loadBrain(){
   if (USE_MOCK || !secret){ setBrainUi("desktop"); return; }
@@ -5837,8 +5877,10 @@ function buildVirtualRows(){
 let _estCpl = 0;
 function estCharsPerLine(){
   if (_estCpl) return _estCpl;
-  const w = Math.min(window.innerWidth * 0.61, 506) - 24;   // .bubble max-width: min(61vw,506px) 减内边距
-  return (_estCpl = Math.max(8, w / 16));        // 每行≈「全宽字」单位数;半角在 estTextHeight 里按 0.5 计
+  const w = Math.min(window.innerWidth * 0.85, 560) - 24;   // .bubble max-width: min(85vw,560px) 减内边距
+  let fs = 1;
+  try{ fs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--fs-scale")) || 1; }catch(_){}
+  return (_estCpl = Math.max(8, w / (16 * fs)));        // 每行≈「全宽字」单位数;半角在 estTextHeight 里按 0.5 计;字号缩放越大每行越少
 }
 window.addEventListener("resize", () => {                    // 转屏/缩放重算一次(不是每行)
   _estCpl = 0;
