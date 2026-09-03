@@ -368,6 +368,7 @@ def _forward_to_loop_sync(msg: dict) -> None:
         "id": msg.get("id"),
         "text": msg.get("text", ""),
         "session_id": meta.get("api_session") or "",
+        "attachments": meta.get("attachments") or [],
     }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         LOOP_INGEST_URL,

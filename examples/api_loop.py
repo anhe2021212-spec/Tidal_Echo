@@ -19,6 +19,7 @@ personal identity.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import json
 import os
@@ -312,7 +313,47 @@ def relay_rows(before_id: int | None, session_id: str, limit: int) -> list[dict[
     return [dict(r) for r in reversed(rows)]
 
 
-def build_messages(text: str, *, before_id: int | None = None, session_id: str = "", use_context: bool = True) -> list[dict[str, str]]:
+async def fetch_attachment_data_url(att: dict[str, Any]) -> str | None:
+    """从 relay 下载图片附件并转成 data URL;非图片或下载失败返回 None。"""
+    url = str(att.get("url") or "").strip()
+    mime = str(att.get("mime") or "").strip()
+    if not url or not mime.startswith("image/"):
+        return None
+    full = url if url.startswith("http") else f"{RELAY_URL}{url}"
+    if RELAY_SECRET:
+        full += ("&" if "?" in full else "?") + "token=" + RELAY_SECRET
+    try:
+        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+            resp = await client.get(full)
+            if resp.status_code >= 400:
+                print(f"[api_loop:image] download HTTP {resp.status_code}: {full}")
+                return None
+            return f"data:{mime};base64,{base64.b64encode(resp.content).decode('ascii')}"
+    except Exception as exc:
+        print(f"[api_loop:image] download failed ({type(exc).__name__}: {exc}): {full}")
+        return None
+
+
+async def attachment_parts(atts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """附件列表 → 多模态 content 片段(图片转 data URL;其他附件降级为文字提示)。"""
+    parts: list[dict[str, Any]] = []
+    if not atts:
+        return parts
+    notes: list[str] = []
+    for att in atts:
+        data_url = await fetch_attachment_data_url(att)
+        if data_url:
+            parts.append({"type": "image_url", "image_url": {"url": data_url}})
+        else:
+            name = str(att.get("name") or "").strip()
+            if name:
+                notes.append(name)
+    if notes:
+        parts.insert(0, {"type": "text", "text": "[附件]" + "、".join(notes)})
+    return parts
+
+
+def build_messages(text: str, *, before_id: int | None = None, session_id: str = "", use_context: bool = True, image_parts: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     tool_hint = " When a configured MCP tool can provide current, external, or actionable information, use it before answering."
     system_text = persona() + tool_hint
     inj_on, inj_rows = injections()
@@ -333,7 +374,12 @@ def build_messages(text: str, *, before_id: int | None = None, session_id: str =
                 continue
             role = "assistant" if row.get("direction") == "out" else "user"
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": text})
+    if image_parts:
+        content: list[dict[str, Any]] = [{"type": "text", "text": text or "（用户发来一张图片，请查看。）"}]
+        content.extend(image_parts)
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": text})
     return messages
 
 
@@ -1171,10 +1217,32 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
 
 
-async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False) -> dict[str, Any]:
+async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     stream_id = "api-" + uuid.uuid4().hex[:16]
-    messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True)
-    out = await run_model(messages, stream_id=stream_id, session_id=session_id, emit_stream=not dry)
+    atts = [a for a in (attachments or []) if isinstance(a, dict)]
+    image_parts = await attachment_parts(atts)
+    messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True, image_parts=image_parts or None)
+    try:
+        out = await run_model(messages, stream_id=stream_id, session_id=session_id, emit_stream=not dry)
+    except HTTPException as exc:
+        # 带图请求可能被中转端以 4xx 拒绝,留到下方统一走纯文本降级。
+        if not image_parts or exc.status_code not in (400, 404, 422):
+            raise
+        print(f"[api_loop:image] multimodal request rejected (HTTP {exc.status_code}), falling back to text-only")
+        out = {"text": "", "error": f"HTTP {exc.status_code}"}
+    if image_parts and not (out.get("text") or "").strip():
+        fb = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True, image_parts=None)
+        if atts:
+            note = "（用户发来图片或文件附件，但当前模型没有正确接收到图片内容，请告知用户这一点。）"
+            last_content = str(fb[-1].get("content") or "") if fb else ""
+            fb[-1]["content"] = (last_content + "\n" + note) if last_content else note
+        try:
+            fallback = await run_model(fb, stream_id=stream_id, session_id=session_id, emit_stream=False)
+        except Exception:
+            fallback = None
+        if fallback and (fallback.get("text") or "").strip():
+            print("[api_loop:image] text-only fallback produced a reply")
+            out = fallback
     reply = (out.get("text") or "").strip()
     if not reply:
         error = str(out.get("error") or "").strip()
@@ -1186,7 +1254,7 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
         "usage": out.get("usage") or {},
         "session": session_id,
     }
-    print(f"[api_loop:handle_ingest] model={out.get('model')}, has_thinking={bool(out.get('thinking'))}, has_tool_calls={bool(out.get('tool_calls'))}")
+    print(f"[api_loop:handle_ingest] model={out.get('model')}, has_thinking={bool(out.get('thinking'))}, has_tool_calls={bool(out.get('tool_calls'))}, images={len(image_parts)}")
     if out.get("thinking"):
         meta["thinking"] = out["thinking"]
     if out.get("tool_calls"):
@@ -1370,7 +1438,9 @@ async def loop_debug_mcp():
 async def loop_ingest(request: Request):
     body = await request.json()
     text = str(body.get("text") or body.get("message") or "").strip()
-    if not text:
+    attachments = body.get("attachments")
+    attachments = attachments if isinstance(attachments, list) else []
+    if not text and not attachments:
         raise HTTPException(status_code=400, detail="empty text")
     msg_id = body.get("id")
     try:
@@ -1379,7 +1449,7 @@ async def loop_ingest(request: Request):
         before_id = None
     session_id = str(body.get("session_id") or body.get("api_session") or active_session_id() or "").strip()
     dry = bool(body.get("dry"))
-    return await handle_ingest(text, before_id, session_id, dry=dry)
+    return await handle_ingest(text, before_id, session_id, dry=dry, attachments=attachments)
 
 
 if __name__ == "__main__":
