@@ -1278,6 +1278,14 @@
     flex:0 0 auto; font-size:11px; color: var(--text-soft); opacity:.8;
     white-space:nowrap;
   }
+  /* iOS 没有触感 API（navigator.vibrate 不存在）——用全局按压亮度反馈兜底，
+     与各按钮已有的 transform 动效叠加，不冲突 */
+  button:active, .config-entry:active, .session-item:active, .chip:active{
+    filter: brightness(.93);
+  }
+  @media (prefers-reduced-motion: reduce){
+    button:active, .config-entry:active, .session-item:active, .chip:active{ filter:none; }
+  }
   .param-slider:disabled{
     opacity:.45; cursor:not-allowed;
   }
@@ -4099,6 +4107,12 @@ function buzz(ms){
   /* 轻震动反馈：Android PWA 支持 navigator.vibrate；iOS 不支持则静默跳过 */
   try{ if (navigator.vibrate) navigator.vibrate(ms); }catch(_){}
 }
+/* 全局按键轻震：点任何按钮给一个短促触感（Android 生效；iOS 无 API，自动跳过，
+   靠上面的 :active 视觉反馈兜底） */
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("button, .backbtn, .topbtn, .floatbtn, .emojibtn, .config-entry, .config-view-back, .session-item, .meta-card-row, .chip, [role='button']");
+  if (el && !el.disabled) buzz(10);
+}, true);
 async function saveLoopConfig(payload, hint){
   if (USE_MOCK || !secret) return false;
   try{
