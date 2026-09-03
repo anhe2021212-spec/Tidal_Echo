@@ -673,7 +673,7 @@
     color: var(--text-soft);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 280px;
+    max-height: min(48vh, 460px);
     overflow-y: auto;
   }
   .meta-card-row.open + .meta-card-detail{ display: block; }
@@ -688,6 +688,22 @@
     color: var(--text);
   }
   .meta-card-detail-section{ margin-top: 6px; }
+  .meta-card-result-text{
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--text);
+    word-break: break-word;
+    background: rgba(125,128,135,.12);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .meta-card-result-text code{
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .9em;
+    background: rgba(0,0,0,.05);
+    padding: 1px 5px;
+    border-radius: 5px;
+  }
   .meta-card-detail-label{
     font-size: 11px;
     font-weight: 500;
@@ -6007,6 +6023,15 @@ function makeAct(rowData){
   row.appendChild(block);
   return row;
 }
+function toolDisplay(tc){
+  // 工具名在 api_loop 里是 mcp_<服务器>_<工具名>;新版本会附带 server/tool 字段,
+  // 旧数据用正则兜底。叠块横条只显示裸工具名(和 KELIVO 一致),服务器放小字提示。
+  const name = String(tc.name || tc.tool || "unknown");
+  if (tc.tool && tc.server) return { label: String(tc.tool), hint: String(tc.server) };
+  const m = /^mcp_(.+)_([^_]+)$/.exec(name);
+  if (m) return { label: m[2], hint: m[1] };
+  return { label: name, hint: "" };
+}
 function makeMetaCard(thinkingBlocks, toolCalls){
   const card = document.createElement("div");
   card.className = "meta-card";
@@ -6032,22 +6057,26 @@ function makeMetaCard(thinkingBlocks, toolCalls){
 
   if (toolCalls && toolCalls.length > 0){
     toolCalls.forEach(tc => {
-      const name = tc.name || "unknown";
+      const disp = toolDisplay(tc);
       const rowEl = document.createElement("div");
       rowEl.className = "meta-card-row";
       rowEl.innerHTML =
         `<span class="meta-card-icon">🔧</span>` +
-        `<span class="meta-card-label">调用工具: ${escapeHtml(name)}</span>` +
+        `<span class="meta-card-label">调用工具: ${escapeHtml(disp.label)}</span>` +
+        (disp.hint ? `<span class="meta-card-hint">${escapeHtml(disp.hint)}</span>` : "") +
         `<span class="meta-card-chevron">›</span>`;
       rowEl.addEventListener("click", () => rowEl.classList.toggle("open"));
       const detail = document.createElement("div");
       detail.className = "meta-card-detail";
       const inputStr = typeof tc.input === "string" ? tc.input : JSON.stringify(tc.input || {}, null, 2);
-      const resultStr = tc.result
-        ? (typeof tc.result === "string" ? tc.result : JSON.stringify(tc.result, null, 2))
-        : "";
       let detailHtml = `<div class="meta-card-detail-section"><div class="meta-card-detail-label">参数</div><pre>${escapeHtml(inputStr)}</pre></div>`;
-      if (resultStr) detailHtml += `<div class="meta-card-detail-section"><div class="meta-card-detail-label">结果</div><pre>${escapeHtml(resultStr)}</pre></div>`;
+      if (tc.result && typeof tc.result === "string" && tc.result.trim()){
+        // 纯文本结果(后端已解包 MCP 包裹)→ 富文本渲染,像正常消息一样排版
+        detailHtml += `<div class="meta-card-detail-section"><div class="meta-card-detail-label">结果</div><div class="meta-card-result-text">${renderText(tc.result)}</div></div>`;
+      }else if (tc.result){
+        const resultStr = JSON.stringify(tc.result, null, 2);
+        detailHtml += `<div class="meta-card-detail-section"><div class="meta-card-detail-label">结果</div><pre>${escapeHtml(resultStr)}</pre></div>`;
+      }
       detail.innerHTML = detailHtml;
       card.appendChild(rowEl);
       card.appendChild(detail);

@@ -1160,6 +1160,67 @@ async def execute_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[st
     raise RuntimeError("MCP tool is not configured")
 
 
+def _tool_display_parts(tool_name: str) -> tuple[str, str]:
+    """mcp_<服务器>_<工具名> → (服务器, 工具名);拆不出则返回 ("", 原名)。"""
+    name = str(tool_name or "")
+    for server in mcp_servers():
+        prefix = f"mcp_{server['name']}_"
+        if name.startswith(prefix):
+            return str(server["name"]), name[len(prefix):]
+    return "", name
+
+
+def _tool_call_entry(tool_name: str, tool_args: dict[str, Any], result: Any, status: str = "success") -> dict[str, Any]:
+    """构造工具叠块记录:附上 server/tool 展示名,PWA 折叠卡片里显示裸工具名(如 breath)。"""
+    server, tool = _tool_display_parts(tool_name)
+    return {
+        "name": tool_name,
+        "server": server,
+        "tool": tool,
+        "input": tool_args,
+        "result": result,
+        "status": status,
+    }
+
+
+def mcp_result_text(data: dict[str, Any]) -> str:
+    """把 MCP tools/call 的 JSON-RPC 响应解包成给人看的纯文本。
+
+    PWA 工具叠块的「结果」区用它展示(解掉 jsonrpc/result/content 包裹,
+    直接呈现内容文本);喂给模型上下文的仍是完整 JSON,不受影响。
+    """
+    if isinstance(data, dict) and data.get("error"):
+        return json.dumps(data["error"], ensure_ascii=False, indent=2)
+    res = data.get("result") if isinstance(data, dict) else data
+    if isinstance(res, dict):
+        content = res.get("content")
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                itype = item.get("type")
+                if itype == "text":
+                    t = str(item.get("text") or "")
+                    if t:
+                        parts.append(t)
+                elif itype == "resource":
+                    rsrc = item.get("resource") or {}
+                    if isinstance(rsrc, dict) and rsrc.get("text"):
+                        parts.append(str(rsrc["text"]))
+                elif itype == "image":
+                    parts.append("（图片资源）")
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+            if parts:
+                return "\n\n".join(parts)
+        if isinstance(res.get("structuredContent"), dict):
+            return json.dumps(res["structuredContent"], ensure_ascii=False, indent=2)
+    if isinstance(res, str):
+        return res
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
 # ── 提示词工具模式(<tool_call> 文本协议) ────────────────────────────────────
 def _prompt_tools_block(tools: list[dict[str, Any]]) -> str:
     lines = [
@@ -1291,10 +1352,10 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
             try:
                 result = await execute_mcp_tool(tool_name, tool_args)
                 result_str = json.dumps(result, ensure_ascii=False)
-                tool_calls_collected.append({"name": tool_name, "input": tool_args, "result": result})
+                tool_calls_collected.append(_tool_call_entry(tool_name, tool_args, mcp_result_text(result)))
             except Exception as exc:
                 result_str = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                tool_calls_collected.append({"name": tool_name, "input": tool_args, "result": {"error": str(exc)}})
+                tool_calls_collected.append(_tool_call_entry(tool_name, tool_args, {"error": str(exc)}, status="error"))
             result_msgs.append({"role": "user", "content": f"<tool_result name=\"{tool_name}\">{result_str}</tool_result>"})
         messages.append({"role": "assistant", "content": text})
         messages.extend(result_msgs)
@@ -1426,10 +1487,10 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                                 args = json.loads(fn.get("arguments") or "{}")
                                 result = await execute_mcp_tool(tool_name, args)
                                 content = json.dumps(result, ensure_ascii=False)
-                                tool_calls_collected.append({"name": tool_name, "input": args, "result": result, "status": "success"})
+                                tool_calls_collected.append(_tool_call_entry(tool_name, args, mcp_result_text(result)))
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                                tool_calls_collected.append({"name": tool_name, "input": args, "result": {"error": str(exc)}, "status": "error"})
+                                tool_calls_collected.append(_tool_call_entry(tool_name, args, {"error": str(exc)}, status="error"))
                             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
                     else:
                         out = {"text": "", "usage": {}}
@@ -1462,10 +1523,10 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                                             args = json.loads(fn.get("arguments") or "{}")
                                             result = await execute_mcp_tool(tool_name, args)
                                             content_str = json.dumps(result, ensure_ascii=False)
-                                            tool_calls_collected.append({"name": tool_name, "input": args, "result": result, "status": "success"})
+                                            tool_calls_collected.append(_tool_call_entry(tool_name, args, mcp_result_text(result)))
                                         except Exception as e2:
                                             content_str = json.dumps({"error": str(e2)}, ensure_ascii=False)
-                                            tool_calls_collected.append({"name": tool_name, "input": args, "result": {"error": str(e2)}, "status": "error"})
+                                            tool_calls_collected.append(_tool_call_entry(tool_name, args, {"error": str(e2)}, status="error"))
                                         messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content_str})
                                 else:
                                     out = {"text": "", "usage": {}}
