@@ -317,6 +317,15 @@
   .session-rename:hover,.session-pin:hover{ color:var(--accent); background:var(--seg-track); }
   .session-del:hover{ color:#e5484d; background:var(--seg-track); }
   .session-pin.on{ color:var(--accent); }
+  .clear-session-list{ display:flex; flex-direction:column; gap:2px; max-height:230px; overflow:auto; margin-bottom:10px; }
+  .clear-session-list .session-item{ cursor:default; }
+  .clear-session-list .session-item:active{ transform:none; }
+  .clear-btn{
+    border:1px solid #e5484d; background:transparent; color:#e5484d; border-radius:999px;
+    font:inherit; font-size:11.5px; padding:4px 10px; cursor:pointer;
+  }
+  .clear-btn:active{ background:#e5484d; color:#fff; }
+  .clear-btn:disabled{ opacity:.5; }
   .session-rename svg,.session-pin svg,.session-del svg{ width:15px; height:15px; display:block; }
   .terminal-panel{
     position:fixed;
@@ -2326,9 +2335,9 @@
         <div class="config-actions"><button class="config-action primary" id="exportChatBtn" type="button">导出下载</button></div>
         <div class="push-hint" id="exportHint"></div>
 
-        <div class="config-field-label">清空当前窗口记录 <i class="info-i" title="删除当前窗口在服务器上的全部聊天记录。窗口本身（名字、置顶）保留，接着就是一个空白的新开始。删除后无法恢复。">i</i></div>
+        <div class="config-field-label">清空窗口记录 <i class="info-i" title="选择某个窗口，删除它在服务器上的全部聊天记录。窗口本身（名字、置顶）保留，接着就是一个空白的新开始。删除后无法恢复。">i</i></div>
+        <div class="clear-session-list" id="clearSessionList"></div>
         <div class="push-hint" id="clearSessionHint"></div>
-        <div class="config-actions"><button class="config-action danger" id="clearSessionBtn" type="button">清空窗口记录</button></div>
 
         <div class="config-field-label">清除本机缓存 <i class="info-i" title="清掉手机浏览器缓存的页面壳和离线消息副本，保留登录状态（不用重新输密钥）。服务器上的聊天记录不受影响。">i</i></div>
         <div class="config-actions"><button class="config-action" id="clearCacheBtn" type="button">清除本机缓存</button></div>
@@ -2585,7 +2594,7 @@ const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), hi
 const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
 const dataConfigView = $("#dataConfigView"), openDataConfigBtn = $("#openDataConfigBtn"), dataEntryStatus = $("#dataEntryStatus");
 const exportScopeSeg = $("#exportScopeSeg"), exportFormatSeg = $("#exportFormatSeg"), exportChatBtn = $("#exportChatBtn"), exportHint = $("#exportHint");
-const clearSessionBtn = $("#clearSessionBtn"), clearSessionHint = $("#clearSessionHint"), clearCacheBtn = $("#clearCacheBtn"), clearCacheHint = $("#clearCacheHint");
+const clearSessionList = $("#clearSessionList"), clearSessionHint = $("#clearSessionHint"), clearCacheBtn = $("#clearCacheBtn"), clearCacheHint = $("#clearCacheHint");
 let exportScope = "current";   // "current" | "all"
 let exportFormat = "json";     // "json" | "text"
 let editingMcpIndex = null;
@@ -4003,21 +4012,49 @@ exportChatBtn?.addEventListener("click", async () => {
     exportHint.textContent = "导出失败：" + (err && err.message ? err.message : err);
   }
 });
-clearSessionBtn?.addEventListener("click", async () => {
-  const item = activeSessionObj();
-  const title = item ? (item.title || "新对话") : "旧主线 / Desktop 记录";
-  if (!confirm(`清空窗口「${title}」的全部聊天记录？\n\n删除后无法恢复，窗口本身会保留。`)) return;
+async function purgeLocalMessagesFor(sid){
   try{
-    const sid = activeApiSession || LEGACY_SESSION_ID;
+    const db = await openMessageDb();
+    await new Promise((resolve) => {
+      const tx = db.transaction(CACHE_STORE, "readwrite");
+      const store = tx.objectStore(CACHE_STORE);
+      const getAll = store.getAll();
+      getAll.onsuccess = () => {
+        (getAll.result || []).forEach((m) => {
+          const s = (m.meta && m.meta.api_session) || "";
+          const match = (sid === LEGACY_SESSION_ID || !sid) ? !s : (s === sid);
+          if (match) store.delete(m.id);
+        });
+        resolve();
+      };
+      getAll.onerror = () => resolve();
+      tx.oncomplete = () => db.close();
+    });
+  }catch(_){}
+}
+clearSessionList?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-clear]");
+  if (!btn || btn.disabled) return;
+  const sid = String(btn.dataset.clear || "");
+  const label = sid === LEGACY_SESSION_ID
+    ? "旧主线 / Desktop 记录"
+    : ((apiSessions.find((s) => s.id === sid) || {}).title || "新对话");
+  if (!confirm(`清空窗口「${label}」的全部聊天记录？\n\n删除后无法恢复，窗口本身会保留。`)) return;
+  btn.disabled = true;
+  try{
     const r = await fetch(`${API_BASE}/app/sessions/${encodeURIComponent(sid)}/messages`, {
       method: "DELETE", headers: authHeaders()
     });
     if (!r.ok) throw new Error("clear " + r.status);
+    purgeLocalMessagesFor(sid);
     resetServerHistoryCache();
-    startChat([]);
-    showToast("窗口记录已清空");
+    if (activeApiSession === sid) startChat([]);
+    if (clearSessionHint) clearSessionHint.textContent = `「${label}」的记录已清空`;
+    showToast("该窗口记录已清空");
   }catch(_){
     showToast("清空失败");
+  }finally{
+    btn.disabled = false;
   }
 });
 clearCacheBtn?.addEventListener("click", async () => {
@@ -4441,6 +4478,21 @@ function renderSessionList(){
         <span class="session-meta">${escapeHtml(meta)}</span>
       </span>
       ${actions}
+    </div>`;
+  }).join("");
+  renderClearSessionList();
+}
+function renderClearSessionList(){
+  if (!clearSessionList) return;
+  const rows = [{ id:LEGACY_SESSION_ID, title:"旧主线 / Desktop 记录", since_id:0, virtual:true }].concat(apiSessions || []);
+  clearSessionList.innerHTML = rows.map((s) => {
+    const meta = s.virtual ? "没有 api_session 标记的记录" : `${s.pinned ? "已置顶 · " : ""}since #${s.since_id || 0}`;
+    return `<div class="session-item" data-session-clear="${escapeHtml(s.id || "")}">
+      <span class="session-main">
+        <span class="session-name">${escapeHtml(s.title || "新对话")}</span>
+        <span class="session-meta">${escapeHtml(meta)}</span>
+      </span>
+      <button class="clear-btn" type="button" data-clear="${escapeHtml(s.id || "")}" aria-label="清空此窗口记录">清空</button>
     </div>`;
   }).join("");
 }
