@@ -148,6 +148,7 @@ PROACTIVE_DEFAULTS: dict[str, Any] = {
     "tz": "Asia/Shanghai",        # 时间感知用:用户的本地时区(IANA 名称)
     "min_idle_hours": 3.0,        # 用户沉默超过这么久才会考虑主动发
     "cooldown_hours": 4.0,        # 成功发出一次后,至少隔这么久才允许下一条
+    "quiet_enabled": True,        # 静默时段总开关:作息不固定时可直接关掉整段
     "quiet_start": "23:00",       # 静默时段开始(本地时间,此区间内不发)
     "quiet_end": "09:00",         # 静默时段结束(跨午夜=「23:00 后到次日 09:00 前」)
     "max_per_day": 3,             # 每天最多主动发几条
@@ -241,6 +242,8 @@ def _parse_ts_epoch(ts: str) -> float:
 
 def _in_quiet_window(now: dt.datetime) -> bool:
     cfg = proactive_cfg()
+    if not cfg.get("quiet_enabled", True):
+        return False  # 静默时段总开关关闭:任何时间都可能主动发
     try:
         sh, sm = (int(x) for x in str(cfg["quiet_start"]).split(":", 1))
         eh, em = (int(x) for x in str(cfg["quiet_end"]).split(":", 1))
@@ -712,6 +715,8 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
                 cur["cooldown_hours"] = max(1.0, min(168.0, float(p["cooldown_hours"])))
             except Exception:
                 pass
+        if "quiet_enabled" in p:
+            cur["quiet_enabled"] = bool(p["quiet_enabled"])
         if "quiet_start" in p:
             v = str(p.get("quiet_start") or "")
             if re.fullmatch(r"\d{1,2}:\d{2}", v):
