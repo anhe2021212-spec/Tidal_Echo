@@ -2342,6 +2342,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
             <span class="config-entry-copy"><strong>指令注入</strong><span id="injectEntryStatus">开关控制 · 规则条目</span></span>
           </button>
+          <button class="config-entry" id="openProactiveConfigBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3.1-.4-4.3-1.2L3 20l1.2-5.2A8.5 8.5 0 1 1 21 11.5z"/><path d="M7.8 11.5h7.4M11.5 7.8v7.4"/></svg>
+            <span class="config-entry-copy"><strong>主动消息</strong><span id="proactiveEntryStatus">按上下文自然发起聊天</span></span>
+          </button>
           <button class="config-entry" id="openDataConfigBtn" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
             <span class="config-entry-copy"><strong>数据管理</strong><span id="dataEntryStatus">导出记录 · 清空窗口 · 清缓存</span></span>
@@ -2446,6 +2450,55 @@
         </div>
         <div class="config-actions"><button class="config-action primary" id="injectSaveBtn" type="button">保存注入包</button></div>
         <div class="push-hint" id="injectConfigHint"></div>
+      </section>
+
+      <section class="settings-card config-view" id="proactiveConfigView">
+        <div class="config-view-head"><button class="config-view-back" data-config-back type="button" aria-label="返回连接与工具">‹</button><div class="config-view-title"><strong>主动消息</strong><span>沉默一段时间后，AI 基于上下文自然发起聊天</span></div></div>
+        <div class="config-fields">
+          <div class="config-field-label">总开关 <i class="info-i" title="开启后，AI 会在你沉默一段时间后，根据聊天上下文和记忆主动找你说一句自然的话。随时可在这里关闭。">i</i></div>
+          <label class="param-auto-row">
+            <input id="proactiveEnabledInput" type="checkbox">
+            <span>开启主动消息（保存后生效）</span>
+          </label>
+          <div class="config-field-label">沉默多久后考虑发 <i class="info-i" title="你超过这个时长没发消息，AI 才会开始考虑要不要主动开口。单位：小时。">i</i></div>
+          <div class="param-slider-row">
+            <input id="proactiveIdleInput" class="param-slider" type="range" min="1" max="12" step="1" value="3" aria-label="沉默时长" oninput="syncParamVal(this)">
+            <span class="param-val" id="proactiveIdleInputVal">3</span>
+          </div>
+          <div class="config-field-label">发送冷却 <i class="info-i" title="成功主动发出一条后，至少隔这么久才允许再发，防止连续打扰。单位：小时。">i</i></div>
+          <div class="param-slider-row">
+            <input id="proactiveCooldownInput" class="param-slider" type="range" min="2" max="24" step="1" value="4" aria-label="发送冷却" oninput="syncParamVal(this)">
+            <span class="param-val" id="proactiveCooldownInputVal">4</span>
+          </div>
+          <div class="config-field-label">每天最多发几条 <i class="info-i" title="按你的本地时区计一天，超过上限当天不再主动发。">i</i></div>
+          <div class="param-slider-row">
+            <input id="proactiveMaxDayInput" class="param-slider" type="range" min="1" max="10" step="1" value="3" aria-label="每日上限" oninput="syncParamVal(this)">
+            <span class="param-val" id="proactiveMaxDayInputVal">3</span>
+          </div>
+          <div class="config-field-label">静默时段 <i class="info-i" title="这段时间内 AI 不会主动发消息（比如夜里）。跨午夜也是允许的：23:00 ~ 09:00 表示晚上 11 点到次日早上 9 点之间保持安静。">i</i></div>
+          <div class="param-slider-row" style="gap:8px">
+            <input id="proactiveQuietStartInput" type="time" value="23:00" aria-label="静默开始" style="flex:1;min-width:0">
+            <span style="flex:0 0 auto;color:var(--think-body)">至</span>
+            <input id="proactiveQuietEndInput" type="time" value="09:00" aria-label="静默结束" style="flex:1;min-width:0">
+          </div>
+          <div class="config-field-label">你的时区 <i class="info-i" title="AI 靠它来判断「现在几点」和「今天」，避免出现时间错乱的消息。">i</i></div>
+          <select id="proactiveTzSelect" aria-label="时区">
+            <option value="Asia/Shanghai">Asia/Shanghai（北京时间）</option>
+            <option value="Asia/Hong_Kong">Asia/Hong_Kong</option>
+            <option value="Asia/Taipei">Asia/Taipei</option>
+            <option value="Asia/Singapore">Asia/Singapore</option>
+            <option value="Asia/Tokyo">Asia/Tokyo</option>
+            <option value="Asia/Seoul">Asia/Seoul</option>
+            <option value="UTC">UTC</option>
+            <option value="Europe/London">Europe/London</option>
+            <option value="Europe/Berlin">Europe/Berlin</option>
+            <option value="America/New_York">America/New_York</option>
+            <option value="America/Los_Angeles">America/Los_Angeles</option>
+            <option value="Australia/Sydney">Australia/Sydney</option>
+          </select>
+        </div>
+        <div class="config-actions"><button class="config-action primary" id="proactiveSaveBtn" type="button">保存设置</button></div>
+        <div class="push-hint" id="proactiveConfigHint"></div>
       </section>
 
       <!-- ── 数据管理 ── -->
@@ -2729,6 +2782,7 @@ const personaConfigView = $("#personaConfigView"), modelParamsConfigView = $("#m
 const personaInput = $("#personaInput"), aiNameInput = $("#aiNameInput"), personaSaveBtn = $("#personaSaveBtn"), personaConfigHint = $("#personaConfigHint");
 const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
 const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
+const proactiveConfigView = $("#proactiveConfigView"), openProactiveConfigBtn = $("#openProactiveConfigBtn"), proactiveEnabledInput = $("#proactiveEnabledInput"), proactiveIdleInput = $("#proactiveIdleInput"), proactiveCooldownInput = $("#proactiveCooldownInput"), proactiveMaxDayInput = $("#proactiveMaxDayInput"), proactiveQuietStartInput = $("#proactiveQuietStartInput"), proactiveQuietEndInput = $("#proactiveQuietEndInput"), proactiveTzSelect = $("#proactiveTzSelect"), proactiveSaveBtn = $("#proactiveSaveBtn"), proactiveConfigHint = $("#proactiveConfigHint"), proactiveEntryStatus = $("#proactiveEntryStatus");
 const dataConfigView = $("#dataConfigView"), openDataConfigBtn = $("#openDataConfigBtn"), dataEntryStatus = $("#dataEntryStatus");
 const exportScopeSeg = $("#exportScopeSeg"), exportFormatSeg = $("#exportFormatSeg"), exportChatBtn = $("#exportChatBtn"), exportHint = $("#exportHint");
 const clearSessionList = $("#clearSessionList"), clearSessionHint = $("#clearSessionHint"), clearCacheBtn = $("#clearCacheBtn"), clearCacheHint = $("#clearCacheHint");
@@ -3684,6 +3738,39 @@ async function loadInjectConfig(){
     updateInjectEntryStatus(!!inj.enabled, (inj.entries || []).length);
   }catch{}
 }
+function renderProactiveStatus(p){
+  if (!proactiveConfigHint) return;
+  const parts = [];
+  if (p && p.last_proactive_at) parts.push(`上次主动找你：${fmtExportTs(p.last_proactive_at)}`);
+  parts.push(`今日已发 ${(p && p.sent_today) || 0} 条`);
+  if (p && p.status_note && p.status_note !== "ok") parts.push(`状态：${p.status_note}`);
+  else if (p && p.next_attempt_at) parts.push(`下次尝试：${fmtExportTs(p.next_attempt_at)}`);
+  proactiveConfigHint.textContent = parts.join(" · ") || "尚未发送过主动消息";
+}
+async function loadProactiveConfig(){
+  if (USE_MOCK || !secret){ renderProactiveStatus(null); return; }
+  try{
+    const r = await fetch(`${API_BASE}/app/loop_config`, { headers: authHeaders() });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    const p = cfg.proactive || {};
+    savedLoopConfig = cfg;
+    if (proactiveEnabledInput) proactiveEnabledInput.checked = !!p.enabled;
+    setParamSlider(proactiveIdleInput, p.min_idle_hours, "3");
+    setParamSlider(proactiveCooldownInput, p.cooldown_hours, "4");
+    setParamSlider(proactiveMaxDayInput, p.max_per_day, "3");
+    if (proactiveQuietStartInput) proactiveQuietStartInput.value = p.quiet_start || "23:00";
+    if (proactiveQuietEndInput) proactiveQuietEndInput.value = p.quiet_end || "09:00";
+    if (proactiveTzSelect) proactiveTzSelect.value = p.tz || "Asia/Shanghai";
+    renderProactiveStatus(p);
+    updateConfigEntryStatus();
+  }catch(_){
+    if (proactiveConfigHint) proactiveConfigHint.textContent = "暂时无法读取主动消息配置";
+  }
+}
+[proactiveIdleInput, proactiveCooldownInput, proactiveMaxDayInput].forEach(sl => {
+  if (sl) sl.addEventListener("input", () => syncParamVal(sl));
+});
 initParamSliders();
 
 async function loadBrain(){
@@ -3722,6 +3809,7 @@ function setConfigView(view){
   if (personaConfigView) personaConfigView.classList.toggle("active", view === "persona");
   if (modelParamsConfigView) modelParamsConfigView.classList.toggle("active", view === "model-params");
   if (injectConfigView) injectConfigView.classList.toggle("active", view === "inject");
+  if (proactiveConfigView) proactiveConfigView.classList.toggle("active", view === "proactive");
   if (dataConfigView) dataConfigView.classList.toggle("active", view === "data");
 }
 function resetMcpForm(){
@@ -3745,6 +3833,10 @@ function updateConfigEntryStatus(){
     }
   }
   if (mcpEntryStatus) mcpEntryStatus.textContent = servers.length ? `${servers.length} 个服务 · ${servers.filter(s => s.enabled !== false).length} 个启用` : "管理工具服务";
+  if (proactiveEntryStatus) {
+    const p = savedLoopConfig && savedLoopConfig.proactive;
+    proactiveEntryStatus.textContent = p && p.enabled ? `已开启 · 今日已发 ${p.sent_today ?? 0} 条` : "按上下文自然发起聊天";
+  }
 }
 const MCP_TOOLS_CACHE = {};
 let editingApiIndex = null;
@@ -4047,6 +4139,20 @@ async function loadModelParamsConfig(){
 $("#openPersonaConfigBtn")?.addEventListener("click", () => { setConfigView("persona"); loadPersonaConfig(); });
 $("#openModelParamsBtn")?.addEventListener("click", () => { setConfigView("model-params"); loadModelParamsConfig(); });
 openInjectConfigBtn?.addEventListener("click", () => { setConfigView("inject"); loadInjectConfig(); });
+openProactiveConfigBtn?.addEventListener("click", () => { setConfigView("proactive"); loadProactiveConfig(); });
+proactiveSaveBtn?.addEventListener("click", async () => {
+  const payload = { proactive: {
+    enabled: proactiveEnabledInput ? proactiveEnabledInput.checked : false,
+    min_idle_hours: Number(proactiveIdleInput ? proactiveIdleInput.value : 3),
+    cooldown_hours: Number(proactiveCooldownInput ? proactiveCooldownInput.value : 4),
+    max_per_day: Number(proactiveMaxDayInput ? proactiveMaxDayInput.value : 3),
+    quiet_start: (proactiveQuietStartInput && proactiveQuietStartInput.value) || "23:00",
+    quiet_end: (proactiveQuietEndInput && proactiveQuietEndInput.value) || "09:00",
+    tz: (proactiveTzSelect && proactiveTzSelect.value) || "Asia/Shanghai",
+  }};
+  const ok = await saveLoopConfig(payload, null);
+  if (ok) await loadProactiveConfig();
+});
 
 /* ════════════ 数据管理：导出 / 清空窗口 / 清本机缓存 ════════════ */
 function fmtExportTs(ts){

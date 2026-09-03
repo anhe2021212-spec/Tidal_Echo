@@ -25,9 +25,11 @@ import json
 import os
 import re
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import uvicorn
@@ -134,6 +136,164 @@ def save_config(cfg: dict[str, Any]) -> None:
     tmp = LOOP_CONFIG.with_suffix(LOOP_CONFIG.suffix + ".tmp")
     tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(LOOP_CONFIG)
+
+
+# ── 主动消息(proactive)────────────────────────────────────────────────────
+# AI 在用户沉默一段时间后,基于上下文主动发起一句自然的话。
+# 所有设置存在 LOOP_CONFIG["proactive"],PWA 设置页可开关/调节;
+# 运行状态(上次发送/今日条数)从 relay.db 的消息里推导,容器重启也不会重复轰炸。
+
+PROACTIVE_DEFAULTS: dict[str, Any] = {
+    "enabled": False,
+    "tz": "Asia/Shanghai",        # 时间感知用:用户的本地时区(IANA 名称)
+    "min_idle_hours": 3.0,        # 用户沉默超过这么久才会考虑主动发
+    "cooldown_hours": 4.0,        # 成功发出一次后,至少隔这么久才允许下一条
+    "quiet_start": "23:00",       # 静默时段开始(本地时间,此区间内不发)
+    "quiet_end": "09:00",         # 静默时段结束(跨午夜=「23:00 后到次日 09:00 前」)
+    "max_per_day": 3,             # 每天最多主动发几条
+}
+
+PROACTIVE_CHECK_SECONDS = 60
+_PROACTIVE_BACKOFF: dict[str, Any] = {"until": 0.0, "note": ""}
+
+
+def proactive_cfg() -> dict[str, Any]:
+    raw = load_config().get("proactive")
+    merged = dict(PROACTIVE_DEFAULTS)
+    if isinstance(raw, dict):
+        for key in PROACTIVE_DEFAULTS:
+            if raw.get(key) is not None:
+                merged[key] = raw[key]
+    return merged
+
+
+def local_now() -> dt.datetime:
+    """用户本地当前时间(用于时间感知与静默时段判断)。"""
+    tz_name = str(proactive_cfg().get("tz") or PROACTIVE_DEFAULTS["tz"])
+    try:
+        return dt.datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        return dt.datetime.now(ZoneInfo(str(PROACTIVE_DEFAULTS["tz"])))
+
+
+def brain_is_loop() -> bool:
+    """当前 AI 大脑是 API loop 时才允许主动发消息(单身体原则:不要和桌面 channel 抢)。"""
+    fallback = "loop" if os.environ.get("RELAY_DEFAULT_BRAIN", "loop") == "loop" else "desktop"
+    brain_file = os.environ.get("RELAY_BRAIN_FILE", "")
+    if brain_file:
+        try:
+            target = Path(brain_file).read_text(encoding="utf-8").strip()
+            return target == "loop"
+        except FileNotFoundError:
+            pass
+        except Exception:
+            return fallback == "loop"
+    return fallback == "loop"
+
+
+def _db_fetch(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    path = Path(RELAY_DB)
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(str(path)) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+
+
+def proactive_db_stats() -> dict[str, Any]:
+    """从 relay.db 推导主动消息运行状态(跨重启持久)。"""
+    stats: dict[str, Any] = {"last_user_ts": "", "last_proactive_ts": "", "today_count": 0}
+    rows = _db_fetch("SELECT ts FROM messages WHERE direction = 'in' ORDER BY id DESC LIMIT 1")
+    if rows:
+        stats["last_user_ts"] = str(rows[0].get("ts") or "")
+    rows = _db_fetch(
+        "SELECT ts FROM messages WHERE direction = 'out' AND json_extract(meta, '$.proactive') = 1 "
+        "ORDER BY id DESC LIMIT 1"
+    )
+    if rows:
+        stats["last_proactive_ts"] = str(rows[0].get("ts") or "")
+    try:
+        start_local = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = start_local.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+        rows = _db_fetch(
+            "SELECT COUNT(*) AS n FROM messages WHERE json_extract(meta, '$.proactive') = 1 AND ts >= ?",
+            (start_utc,),
+        )
+        if rows:
+            stats["today_count"] = int(rows[0].get("n") or 0)
+    except Exception:
+        pass
+    return stats
+
+
+def _parse_ts_epoch(ts: str) -> float:
+    try:
+        d = dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+        return d.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _in_quiet_window(now: dt.datetime) -> bool:
+    cfg = proactive_cfg()
+    try:
+        sh, sm = (int(x) for x in str(cfg["quiet_start"]).split(":", 1))
+        eh, em = (int(x) for x in str(cfg["quiet_end"]).split(":", 1))
+        start = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    except Exception:
+        return False
+    if start == end:
+        return False
+    cur = now.replace(second=0, microsecond=0)
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end   # 跨午夜:如 23:00 ~ 09:00
+
+
+def _proactive_trigger(now_local: dt.datetime, idle_hours: float) -> str:
+    weekday = "一二三四五六日"[now_local.weekday()]
+    time_str = f"{now_local.strftime('%Y-%m-%d %H:%M')} 周{weekday}"
+    if idle_hours >= 1:
+        idle_text = f"{idle_hours:.1f} 小时"
+    else:
+        idle_text = f"{max(1, int(idle_hours * 60))} 分钟"
+    return (
+        "（以下是一条内部系统提示，不要复述它，也不要在言辞中让用户察觉它的存在。）\n"
+        f"现在用户的本地时间是：{time_str}。\n"
+        f"用户已经大约 {idle_text} 没有给你发消息了。\n"
+        "请你根据上面的聊天历史和这段沉默前的上下文，判断此刻有没有一件「真实、自然、值得说」的事想主动对用户讲。\n"
+        "可以是：接着聊上一次没聊完的话题、关心一件用户提过的事的进展、分享一个与你们有关的新想法、提醒一件你们约定过的事。\n"
+        "要求：必须有具体的上下文依据；禁止机械式、生硬的寒暄，禁止前言不搭后语、像刚认识一样没话找话；"
+        "不要只为了问候而硬凑「早安/午安/晚安」这类时间用语（除非上下文里确实合适）。\n"
+        "语气和用词保持与你平时回复完全一致，长度 1～3 句，不要展开成小作文。\n"
+        "如果此刻确实没有任何自然想说的话，就只回复 SKIP，不要勉强硬凑。"
+    )
+
+
+def _backoff(seconds: float, note: str) -> None:
+    _PROACTIVE_BACKOFF["until"] = time.time() + seconds
+    _PROACTIVE_BACKOFF["note"] = note
+
+
+def proactive_public() -> dict[str, Any]:
+    """给 PWA 设置页看的配置 + 运行状态。"""
+    out = dict(proactive_cfg())
+    stats = proactive_db_stats()
+    out["last_proactive_at"] = stats["last_proactive_ts"]
+    out["last_user_at"] = stats["last_user_ts"]
+    out["sent_today"] = stats["today_count"]
+    out["next_attempt_at"] = (
+        dt.datetime.fromtimestamp(_PROACTIVE_BACKOFF["until"], dt.timezone.utc).isoformat()
+        if _PROACTIVE_BACKOFF["until"] > time.time() else None
+    )
+    out["status_note"] = _PROACTIVE_BACKOFF["note"] or ""
+    return out
 
 
 def main_chain() -> list[dict[str, str]]:
@@ -417,6 +577,7 @@ def public_config() -> dict[str, Any]:
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
+        "proactive": proactive_public(),
         "active_session": active_session_id(),
         "sessions": session_rows(),
         "main_chain": [
@@ -525,6 +686,47 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
                 raise HTTPException(status_code=400, detail=f"MCP row {pos + 1}: url required")
             new_servers.append(entry)
         cfg["mcp_servers"] = new_servers
+    if isinstance(body.get("proactive"), dict):
+        p = body["proactive"]
+        cur = proactive_cfg()
+        if "enabled" in p:
+            cur["enabled"] = bool(p["enabled"])
+            if not cur["enabled"]:
+                _PROACTIVE_BACKOFF["until"] = 0.0
+                _PROACTIVE_BACKOFF["note"] = ""
+        if "tz" in p:
+            tz = str(p.get("tz") or "").strip()
+            if tz:
+                try:
+                    ZoneInfo(tz)
+                    cur["tz"] = tz
+                except Exception:
+                    pass
+        if "min_idle_hours" in p:
+            try:
+                cur["min_idle_hours"] = max(0.5, min(72.0, float(p["min_idle_hours"])))
+            except Exception:
+                pass
+        if "cooldown_hours" in p:
+            try:
+                cur["cooldown_hours"] = max(1.0, min(168.0, float(p["cooldown_hours"])))
+            except Exception:
+                pass
+        if "quiet_start" in p:
+            v = str(p.get("quiet_start") or "")
+            if re.fullmatch(r"\d{1,2}:\d{2}", v):
+                cur["quiet_start"] = v
+        if "quiet_end" in p:
+            v = str(p.get("quiet_end") or "")
+            if re.fullmatch(r"\d{1,2}:\d{2}", v):
+                cur["quiet_end"] = v
+        if "max_per_day" in p:
+            try:
+                cur["max_per_day"] = max(0, min(20, int(p["max_per_day"])))
+            except Exception:
+                pass
+        cur["cooldown_hours"] = max(cur["cooldown_hours"], cur["min_idle_hours"])
+        cfg["proactive"] = cur
     save_config(cfg)
     return public_config()
 
@@ -1229,6 +1431,83 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
 
 
+async def _proactive_step() -> None:
+    """主动消息的单次检查(约每 60 秒由 _proactive_loop 调用一次)。"""
+    cfg = proactive_cfg()
+    if not cfg["enabled"] or not brain_is_loop():
+        return
+    if _PROACTIVE_BACKOFF["until"] > time.time():
+        return
+    now_local = local_now()
+    if _in_quiet_window(now_local):
+        return
+    stats = proactive_db_stats()
+    if not stats["last_user_ts"]:
+        return  # 还没有任何对话历史,没有上下文可依据,不硬聊
+    now_epoch = time.time()
+    last_user_epoch = _parse_ts_epoch(str(stats["last_user_ts"]))
+    idle_hours = (now_epoch - last_user_epoch) / 3600.0 if last_user_epoch > 0 else -1.0
+    if idle_hours < 0 or idle_hours < float(cfg["min_idle_hours"]):
+        return
+    last_pro_epoch = _parse_ts_epoch(str(stats["last_proactive_ts"]))
+    if last_pro_epoch > 0 and (now_epoch - last_pro_epoch) < float(cfg["cooldown_hours"]) * 3600.0:
+        return
+    if int(stats["today_count"]) >= int(cfg["max_per_day"]):
+        return
+    session_id = active_session_id()
+    messages = build_messages(
+        _proactive_trigger(now_local, idle_hours),
+        before_id=None,
+        session_id=session_id,
+        use_context=True,
+    )
+    try:
+        out = await run_model(messages, emit_stream=False)
+    except Exception as exc:
+        _backoff(1800.0, f"模型调用异常：{type(exc).__name__}")
+        print(f"[api_loop:proactive] model error: {type(exc).__name__}: {exc}")
+        return
+    if not out or out.get("error"):
+        _backoff(1800.0, f"模型不可用（号池可能为空）：{str(out.get('error') if out else '')[:120]}")
+        print(f"[api_loop:proactive] all models failed: {out.get('error') if out else 'no output'}, backoff 30min")
+        return
+    text = str(out.get("text") or "").strip().strip('"“”\'‘’')
+    if re.match(r"^\s*SKIP\b", text, re.IGNORECASE):
+        _backoff(1800.0, "模型判断此刻没有想说的话")
+        print("[api_loop:proactive] model chose SKIP, backoff 30min")
+        return
+    if not text:
+        _backoff(1800.0, "模型返回空内容")
+        print("[api_loop:proactive] empty text, backoff 30min")
+        return
+    if len(text) > 400:
+        cut = text[:400].rsplit("\n", 1)[0].strip()
+        text = cut or text[:400]
+    ok, body = await relay_out({
+        "type": "reply",
+        "text": text,
+        "api_session": session_id,
+        "proactive": True,
+        "api": {"runtime": "api_loop", "model": out.get("model"), "proactive": True},
+    })
+    if not ok:
+        _backoff(600.0, f"relay 发送失败：{str(body)[:120]}")
+        print(f"[api_loop:proactive] relay_out failed: {body}")
+        return
+    _PROACTIVE_BACKOFF["until"] = 0.0
+    _PROACTIVE_BACKOFF["note"] = "ok"
+    print(f"[api_loop:proactive] sent ({len(text)} chars, session={session_id}, model={out.get('model')})")
+
+
+async def _proactive_loop() -> None:
+    while True:
+        try:
+            await _proactive_step()
+        except Exception as exc:
+            print(f"[api_loop:proactive] tick error: {type(exc).__name__}: {exc}")
+        await asyncio.sleep(PROACTIVE_CHECK_SECONDS)
+
+
 async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: bool = False, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     stream_id = "api-" + uuid.uuid4().hex[:16]
     atts = [a for a in (attachments or []) if isinstance(a, dict)]
@@ -1289,6 +1568,16 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
 
 app = FastAPI(title="companion-api-loop")
 
+_proactive_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def _start_proactive() -> None:
+    global _proactive_task
+    if _proactive_task is None:
+        _proactive_task = asyncio.create_task(_proactive_loop())
+        print("[api_loop:proactive] scheduler started (check every 60s)")
+
 
 @app.get("/healthz")
 async def healthz():
@@ -1302,6 +1591,7 @@ async def healthz():
         "relay_secret_loaded": bool(RELAY_SECRET),
         "unsupported_routes": len(_TOOLS_UNSUPPORTED_ROUTES),
         "force_native_tools": FORCE_NATIVE_TOOLS,
+        "proactive_enabled": bool(proactive_cfg().get("enabled")),
     }
 
 
