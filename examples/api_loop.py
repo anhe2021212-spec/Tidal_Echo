@@ -367,7 +367,9 @@ def injections() -> tuple[bool, list[dict[str, str]]]:
 
 def temperature() -> float:
     try:
-        return float(load_config().get("temperature", TEMPERATURE))
+        v = float(load_config().get("temperature", TEMPERATURE))
+        # 下限收 0.1:部分第三方中转收到 0 会按 1 处理甚至报参数错误
+        return max(0.1, min(2.0, v))
     except Exception:
         return TEMPERATURE
 
@@ -626,7 +628,7 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
         cfg["ai_avatar"] = raw if (raw.startswith("data:image/") and len(raw) <= 3_000_000) else ""
     if "temperature" in body:
         try:
-            cfg["temperature"] = max(0.0, min(2.0, float(body["temperature"])))
+            cfg["temperature"] = max(0.1, min(2.0, float(body["temperature"])))
         except Exception:
             pass
     if "top_p" in body:
@@ -989,17 +991,20 @@ async def chat_once(route: dict[str, Any], messages: list[dict[str, Any]], tools
     body = {
         "model": route["model"],
         "messages": messages,
-        "temperature": temperature(),
         "stream": True,
         # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
         "stream_options": {"include_usage": True},
     }
+    # 采样参数二选一(OpenAI 规范:temperature/top_p 不同时发,部分网关只认其一):
+    # top_p 被用户调低(<1.0)才算"想用核采样",此时只发 top_p;其余情况只发 temperature。
+    tp = top_p()
+    if tp is not None and float(tp) < 1.0:
+        body["top_p"] = tp
+    else:
+        body["temperature"] = temperature()
     mt = max_tokens()
     if mt is not None:
         body["max_tokens"] = mt
-    tp = top_p()
-    if tp is not None:
-        body["top_p"] = tp
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
