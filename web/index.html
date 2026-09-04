@@ -2879,18 +2879,29 @@ function sampleImageBand(img, yStart, ySize){
   var d = ctx.getImageData(0,0,1,1).data;
   return "rgb("+d[0]+","+d[1]+","+d[2]+")";
 }
+function scrimBlend(rgb, alpha){
+  var m = rgb.match(/\d+/g);
+  if (!m) return rgb;
+  return "rgb(" + m.slice(0,3).map(function(c){ return Math.round(c*(1-alpha) + 255*alpha); }).join(",") + ")";
+}
 function applyWall(url){
   const image = `url("${url}")`;
   wallEl.style.backgroundImage = image;
 
-  // iOS Home Screen paints status/home areas from host chrome. Keep root paint
-  // close to the fixed wallpaper, while leaving the real layout viewport alone.
+  // The header inside the app shows the wallpaper UNDER the white scrim, but the
+  // system status strip above paints the raw wallpaper (iOS root background) or a
+  // raw sampled color (Android theme-color) — that mismatch reads as a "刘海" cut.
+  // Stack the same scrim gradient onto the root paint so the strip continues the
+  // header seamlessly instead of breaking at the seam.
+  var scrim = "";
+  try{ scrim = getComputedStyle(document.documentElement).getPropertyValue("--scrim").trim(); }catch(e){}
+  var rootPaint = scrim ? (scrim + ", " + image) : image;
   var de = document.documentElement, bd = document.body;
   [de, bd].forEach((el) => {
     if (!el) return;
-    el.style.setProperty("background-image", image, "important");
-    el.style.setProperty("background-size", "cover", "important");
-    el.style.setProperty("background-position", "center", "important");
+    el.style.setProperty("background-image", rootPaint, "important");
+    el.style.setProperty("background-size", "cover, cover", "important");
+    el.style.setProperty("background-position", "center, center", "important");
     el.style.setProperty("background-repeat", "no-repeat", "important");
   });
 
@@ -2899,7 +2910,10 @@ function applyWall(url){
     try{
       var topCol = sampleImageBand(img, 0, Math.max(1, Math.floor(img.height*0.12)));
       var botCol = sampleImageBand(img, Math.floor(img.height*0.88), Math.max(1, Math.floor(img.height*0.12)));
-      setThemeColor(topCol);
+      // Android paints its status bar from theme-color: blend the white scrim
+      // (≈0.35 avg over the header zone) into the sampled color so the status bar
+      // matches the perceived header instead of the raw wallpaper.
+      setThemeColor(scrimBlend(topCol, 0.35));
       de.style.setProperty("background-color", botCol, "important");
       bd.style.setProperty("background-color", botCol, "important");
     }catch(e){}
