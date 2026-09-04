@@ -391,13 +391,6 @@ def max_tokens() -> int | None:
     except Exception:
         return MAX_TOKENS
 
-def thinking_budget() -> int:
-    try:
-        return max(0, int(load_config().get("thinking_budget", 0)))
-    except Exception:
-        return 0
-
-
 # ── 会话窗口(sessions)管理 ─────────────────────────────────────────────────
 def session_rows() -> list[dict[str, Any]]:
     rows = load_config().get("sessions")
@@ -597,7 +590,6 @@ def public_config() -> dict[str, Any]:
         "temperature": cfg.get("temperature", TEMPERATURE),
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
-        "thinking_budget": cfg.get("thinking_budget", 0),
         "warm_enabled": bool(warm_cfg().get("enabled", False)),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "proactive": proactive_public(),
@@ -651,11 +643,6 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
                 cfg["max_tokens"] = max(100, min(131072, int(v)))
             except Exception:
                 pass
-    if "thinking_budget" in body:
-        try:
-            cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
-        except Exception:
-            pass
     if "warm_enabled" in body:
         wl = cfg.get("warm_layer")
         wl = dict(wl) if isinstance(wl, dict) else {}
@@ -1013,9 +1000,6 @@ async def chat_once(route: dict[str, Any], messages: list[dict[str, Any]], tools
     tp = top_p()
     if tp is not None:
         body["top_p"] = tp
-    budget = thinking_budget()
-    if budget > 0:
-        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
