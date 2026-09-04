@@ -1701,7 +1701,8 @@ async def loop_chat(request: Request):
     text = str(body.get("text") or body.get("message") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty text")
-    session_id = str(body.get("session_id") or body.get("api_session") or active_session_id() or "").strip()
+    # 不带 session 标记时保持无标记(旧主线),别继承上一次的 active 窗口,否则回复窜门。
+    session_id = str(body.get("session_id") or body.get("api_session") or "").strip()
     messages = build_messages(text, before_id=None, session_id=session_id, use_context=bool(body.get("use_context", True)))
     out = await run_model(messages, session_id=session_id, emit_stream=False)
     return {"ok": True, "reply": out.get("text") or "", "api": out}
@@ -1808,7 +1809,8 @@ async def loop_ingest(request: Request):
         before_id = int(msg_id) if msg_id is not None else None
     except Exception:
         before_id = None
-    session_id = str(body.get("session_id") or body.get("api_session") or active_session_id() or "").strip()
+    # 不带 session 标记时保持无标记(旧主线),别继承上一次的 active 窗口,否则回复窜门。
+    session_id = str(body.get("session_id") or body.get("api_session") or "").strip()
     dry = bool(body.get("dry"))
     return await handle_ingest(text, before_id, session_id, dry=dry, attachments=attachments)
 
