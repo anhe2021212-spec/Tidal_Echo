@@ -832,14 +832,19 @@ def normalize_stream_event(ev: dict[str, Any]) -> dict[str, Any]:
     delta = choice.get("delta") or {}
     finish_reason = choice.get("finish_reason")
 
-    content = delta.get("content") or ""
+    # Anthropic 兼容端点会用 delta.type=="thinking" 标记思考块;
+    # 此时 delta.content 属于思考,不能算作正文。
+    is_thinking_block = delta.get("type") == "thinking"
+    content = "" if is_thinking_block else (delta.get("content") or "")
 
     # 思考字段：各家命名不同，统一归到 thinking
     thinking = ""
     if delta.get("reasoning_content"):
         thinking = delta["reasoning_content"]          # DeepSeek / Qwen / GLM
-    elif delta.get("type") == "thinking":
-        thinking = delta.get("thinking") or delta.get("content") or ""   # Anthropic 兼容端点
+    elif delta.get("reasoning"):
+        thinking = delta["reasoning"]                  # OpenRouter / 部分中转(单数命名)
+    elif is_thinking_block:
+        thinking = delta.get("thinking") or delta.get("content") or ""
     elif delta.get("thinking"):
         thinking = delta["thinking"]                   # OpenAI 扩展
     elif ev.get("thinking"):
@@ -922,11 +927,77 @@ def merge_thinking(parts: list[str]) -> list[dict[str, Any]] | None:
     return [{"content": merged}] if merged else None
 
 
-async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sink) -> dict[str, Any]:
+# ── 思考增量实时转发器 ────────────────────────────────────────────────────
+# 把模型流式返回的 thinking 增量攒批推给 relay(relay 再扇出给 PWA 实时渲染)。
+# 作用双份:① PWA 能实时看到思考链(而不是等最终回复包);② 长时间思考期间
+# PWA 持续收到事件,不会误判超时/掉线。
+class _DeltaEmitter:
+    def __init__(self, stream_id: str, session_id: str, kind: str = "thinking"):
+        self.stream_id = stream_id
+        self.session_id = session_id
+        self.kind = kind
+        self.buf = ""
+        self.sent = False
+        self._timer: asyncio.Task | None = None
+
+    async def feed(self, chunk: str) -> None:
+        chunk = str(chunk or "")
+        if not chunk:
+            return
+        self.buf += chunk
+        if len(self.buf) >= 256:
+            await self.flush()
+        elif self._timer is None:
+            self._timer = asyncio.create_task(self._delayed_flush())
+
+    async def _delayed_flush(self) -> None:
+        await asyncio.sleep(0.4)
+        self._timer = None
+        if self.buf:
+            await self.flush()
+
+    async def flush(self) -> None:
+        if not self.buf:
+            return
+        chunk, self.buf = self.buf, ""
+        try:
+            ok, body = await relay_out({
+                "type": f"{self.kind}_delta",
+                "stream_id": self.stream_id,
+                "text": chunk,
+                "done": False,
+                "api_session": self.session_id,
+            })
+            if ok:
+                self.sent = True
+            else:
+                print(f"[api_loop:stream] {self.kind} delta push failed: {str(body)[:120]}")
+        except Exception as exc:
+            print(f"[api_loop:stream] {self.kind} delta push error: {type(exc).__name__}: {exc}")
+
+    async def close(self) -> None:
+        """flush 剩余缓冲,并补一个 done 帧让 relay 把思考消息落库。"""
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        await self.flush()
+        if self.sent:
+            try:
+                await relay_out({
+                    "type": f"{self.kind}_delta",
+                    "stream_id": self.stream_id,
+                    "done": True,
+                    "api_session": self.session_id,
+                })
+            except Exception:
+                pass
+
+
+async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sink, think_sink=None) -> dict[str, Any]:
     body = {
         "model": route["model"],
         "messages": messages,
-        "temperature": temperature(),
+        "temperature": _route_temperature(route),
         "stream": True,
         # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
         "stream_options": {"include_usage": True},
@@ -983,6 +1054,11 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
                     await sink(n["content"])
                 if n["thinking"]:
                     thinking_parts.append(n["thinking"])
+                    if think_sink:
+                        try:
+                            await think_sink(n["thinking"])
+                        except Exception:
+                            pass
                 if n["tool_calls"]:
                     accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
     final_tool_calls, _ = finalize_tool_calls(tool_calls_buf)
@@ -1086,11 +1162,11 @@ async def mcp_tools() -> list[dict[str, Any]]:
     return tools
 
 
-async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, *, disable_thinking: bool = False) -> dict[str, Any]:
+async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, *, disable_thinking: bool = False, on_thinking=None) -> dict[str, Any]:
     body = {
         "model": route["model"],
         "messages": messages,
-        "temperature": temperature(),
+        "temperature": _route_temperature(route),
         "stream": True,
         # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
         "stream_options": {"include_usage": True},
@@ -1164,6 +1240,11 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
                     text_parts.append(n["content"])
                 if n["thinking"]:
                     thinking_parts.append(n["thinking"])
+                    if on_thinking:
+                        try:
+                            await on_thinking(n["thinking"])
+                        except Exception:
+                            pass
                 if n["tool_calls"]:
                     accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
 
@@ -1353,7 +1434,7 @@ def _extract_tool_calls(text: str) -> list[dict[str, Any]]:
     return calls
 
 
-async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_rounds: int = 8) -> dict[str, Any]:
+async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_rounds: int = 8, on_thinking=None) -> dict[str, Any]:
     system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
     if system_msg:
         system_msg["content"] = system_msg["content"].rstrip() + "\n\n" + _prompt_tools_block(tools)
@@ -1363,13 +1444,15 @@ async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]
     tool_calls_collected: list[dict[str, Any]] = []
     nudged = False
     for _ in range(max_rounds):
-        out = await complete_chat(route, messages)
+        out = await complete_chat(route, messages, on_thinking=on_thinking)
         last_out = out
         text = out.get("text") or ""
         calls = _extract_tool_calls(text)
         if not calls:
-            if not nudged and not tool_calls_collected:
-                # 尚未执行过任何工具:追加一次强制提示,再给它一次机会
+            # 只有在模型回复极短(疑似偷懒/漏用工具)时才补一次强制提示。
+            # 正常长度的直接回答就是最终答案——曾经这里无条件 nudge,把模型
+            # 已经写好的完整回复扔了再重roll一轮 32k 思考,既慢又丢内容。
+            if not nudged and not tool_calls_collected and len(text.strip()) < 40:
                 nudged = True
                 print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, nudging once, text_preview={text[:150]!r}")
                 messages.append({"role": "assistant", "content": text})
@@ -1423,6 +1506,17 @@ def _route_is_claude(route: dict[str, Any]) -> bool:
     probe = f"{route.get('model', '')} {route.get('url', '')}".lower()
     return ("claude" in probe) or ("anthropic" in probe)
 
+def _route_temperature(route: dict[str, Any]) -> float:
+    """按路由钳制温度。Anthropic/Claude 只接受 [0,1];开启 extended thinking
+    时必须为 1,否则中转端会静默丢弃 thinking(思考链整段消失)。
+    配置里残留的 2.0 之类在这里被钳住,不用改服务端配置。"""
+    t = temperature()
+    if not _route_is_claude(route):
+        return t
+    if thinking_budget() > 0:
+        return 1.0
+    return max(0.0, min(1.0, t))
+
 def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """对 Claude 路由注入思考风格(幂等:system 已带标记则跳过)。"""
     if not _route_is_claude(route):
@@ -1438,7 +1532,7 @@ def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> li
 
 
 # ── 模型调用主入口:多模型 fallback ─────────────────────────────────────────
-async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False) -> dict[str, Any]:
+async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False, on_thinking=None) -> dict[str, Any]:
     tried = []
     last_error = ""
     for route in main_chain():
@@ -1457,7 +1551,7 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
             tool_names = [t.get("function", {}).get("name", "") for t in native_tools] if native_tools else []
             print(f"[api_loop:run_model] mcp_tools={len(all_tools)}, native_tools={len(native_tools)}, prompt_tools={use_prompt_tools}, suppress_thinking={suppress_thinking}, tool_names={tool_names[:5]}")
             if use_prompt_tools:
-                out = await _prompt_tool_loop(route, _msgs_for_route(route, messages), all_tools)
+                out = await _prompt_tool_loop(route, _msgs_for_route(route, messages), all_tools, on_thinking=on_thinking)
             elif emit_stream and STREAM_OUTPUT and not native_tools:
                 try:
                     async def sink(chunk: str) -> None:
@@ -1468,11 +1562,11 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                             "done": False,
                             "api_session": session_id,
                         })
-                    out = await stream_chat(route, _msgs_for_route(route, messages), sink)
+                    out = await stream_chat(route, _msgs_for_route(route, messages), sink, think_sink=on_thinking)
                 except HTTPException as exc:
                     if exc.status_code not in FALLBACK_CODES:
                         raise
-                    out = await complete_chat(route, _msgs_for_route(route, messages), native_tools)
+                    out = await complete_chat(route, _msgs_for_route(route, messages), native_tools, on_thinking=on_thinking)
             else:
                 messages = _msgs_for_route(route, messages)
                 base_messages = messages[:]
@@ -1481,7 +1575,7 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                 suppress = suppress_thinking
                 try:
                     for round_idx in range(8):
-                        out = await complete_chat(route, messages, native_tools, disable_thinking=suppress)
+                        out = await complete_chat(route, messages, native_tools, disable_thinking=suppress, on_thinking=on_thinking)
                         if round_idx == 0 and out.get("thinking"):
                             first_thinking = out["thinking"]
                         msg = out.get("message") or {}
@@ -1513,9 +1607,9 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                                 print(f"[api_loop:run_model] native tools silently dropped by relay, switching to prompt tools: {route_key}")
                                 _TOOLS_UNSUPPORTED_ROUTES.add(route_key)
                                 try:
-                                    out = await _prompt_tool_loop(route, base_messages, all_tools)
+                                    out = await _prompt_tool_loop(route, base_messages, all_tools, on_thinking=on_thinking)
                                 except Exception:
-                                    out = await complete_chat(route, base_messages)
+                                    out = await complete_chat(route, base_messages, on_thinking=on_thinking)
                         if not calls:
                             break
                         messages.append(msg)
@@ -1572,18 +1666,18 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
                                 if tool_calls_collected:
                                     out["tool_calls"] = tool_calls_collected
                             except Exception:
-                                out = await complete_chat(route, base_messages)
+                                out = await complete_chat(route, base_messages, on_thinking=on_thinking)
                         else:
                             print(f"[api_loop:run_model] marking route as tools-unsupported: {route_key}")
                             _TOOLS_UNSUPPORTED_ROUTES.add(route_key)
                             try:
-                                out = await _prompt_tool_loop(route, base_messages, all_tools)
+                                out = await _prompt_tool_loop(route, base_messages, all_tools, on_thinking=on_thinking)
                             except Exception:
-                                out = await complete_chat(route, base_messages)
+                                out = await complete_chat(route, base_messages, on_thinking=on_thinking)
                     elif not native_tools or exc.status_code not in {404, 405, 422}:
                         raise
                     else:
-                        out = await complete_chat(route, base_messages)
+                        out = await complete_chat(route, base_messages, on_thinking=on_thinking)
             out["model"] = route.get("model")
             out["tried"] = tried[:-1]
             return out
@@ -1680,14 +1774,27 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
     atts = [a for a in (attachments or []) if isinstance(a, dict)]
     image_parts = await attachment_parts(atts)
     messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True, image_parts=image_parts or None)
+    thinking_stream: _DeltaEmitter | None = None
+    if (not dry) and STREAM_OUTPUT:
+        thinking_stream = _DeltaEmitter(stream_id, session_id, kind="thinking")
     try:
-        out = await run_model(messages, stream_id=stream_id, session_id=session_id, emit_stream=not dry)
+        out = await run_model(
+            messages,
+            stream_id=stream_id,
+            session_id=session_id,
+            emit_stream=not dry,
+            on_thinking=thinking_stream.feed if thinking_stream else None,
+        )
     except HTTPException as exc:
         # 带图请求可能被中转端以 4xx 拒绝,留到下方统一走纯文本降级。
         if not image_parts or exc.status_code not in (400, 404, 422):
             raise
         print(f"[api_loop:image] multimodal request rejected (HTTP {exc.status_code}), falling back to text-only")
         out = {"text": "", "error": f"HTTP {exc.status_code}"}
+    finally:
+        # 思考增量 flush + done 落库,必须先于最终回复到达 relay(消息次序)
+        if thinking_stream is not None:
+            await thinking_stream.close()
     if image_parts and not (out.get("text") or "").strip():
         fb = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True, image_parts=None)
         if atts:
@@ -1713,7 +1820,9 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
         "session": session_id,
     }
     print(f"[api_loop:handle_ingest] model={out.get('model')}, has_thinking={bool(out.get('thinking'))}, has_tool_calls={bool(out.get('tool_calls'))}, images={len(image_parts)}")
-    if out.get("thinking"):
+    # 思考已实时流式推送(relay 落库为独立 thinking 消息)时,不再塞进回复 meta,
+    # 否则 PWA 会同时渲染两份思考(流式思考行 + 回复的 meta 卡)。
+    if out.get("thinking") and not (thinking_stream and thinking_stream.sent):
         meta["thinking"] = out["thinking"]
     if out.get("tool_calls"):
         meta["tool_calls"] = out["tool_calls"]
