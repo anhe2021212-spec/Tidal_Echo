@@ -221,7 +221,7 @@
   }
   .topbar > *{ pointer-events: auto; }
   .peerpill{
-    position:absolute; left:50%; transform:translateX(-50%);
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
     display:flex; flex-direction:column; align-items:center; line-height:1.15;
     background: transparent;
     border: none;
@@ -602,6 +602,8 @@
     background: rgba(120,100,80,0.14); padding: 1px 5px; border-radius: 5px;
   }
   .bubble .txt strong{ font-weight: 700; }
+  .bubble .txt em{ font-style: italic; }
+  .bubble .txt s{ text-decoration: line-through; opacity: .85; }
   .meta{
     display:inline; margin-left: clamp(10px, 1.4vw, 16px); white-space: nowrap;
     font-family: var(--font-en), var(--font-cn);
@@ -1402,8 +1404,9 @@
   @media (max-width: 520px){
     :root{
       --side-pad: 16px;
-      --header-h: 56px;
+      --header-h: 60px;
       --avatar-size: 32px;
+      --edge-fade-top: 10px;   /* 顶部渐隐收窄:避免首条消息变半透明残影、显得头部被挤压 */
     }
     .peerpill{ max-width: calc(100% - 120px); }
     .peerpill .name{ font-size: 18px; }
@@ -5514,8 +5517,10 @@ function escapeHtml(s){
 }
 function renderText(t){
   let s = escapeHtml(t);
-  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, (m, a, b) => `${a}<em>${b}</em>`);
+  s = s.replace(/~~([^~\s][^~]*?)~~/g, "<s>$1</s>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
   s = s.replace(/\n/g, "<br>");
   return s;
