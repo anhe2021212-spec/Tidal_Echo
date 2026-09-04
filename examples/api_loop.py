@@ -365,6 +365,68 @@ def injections() -> tuple[bool, list[dict[str, str]]]:
         return False, rows
     return True, rows
 
+# ── 空间状态(presence)· 房间系统 ──────────────────────────────────────────
+# 只描述「两人现在在哪、环境如何、怎么互动」,绝不写人格指令。
+# 人格永远来自 persona(system prompt),全局唯一,不随房间/场景变化。
+
+PRESENCE_DEFAULTS: dict[str, Any] = {
+    "scenario": "together_at_home",  # together_at_home | away | together_out
+    "room": "",                      # 当前房间名(仅 together_at_home 生效),空 = 未指定
+}
+SCENARIO_IDS: tuple[str, ...] = ("together_at_home", "away", "together_out")
+
+
+def presence() -> dict[str, Any]:
+    raw = load_config().get("presence")
+    merged = dict(PRESENCE_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in merged:
+            if k in raw:
+                merged[k] = raw[k]
+    return merged
+
+
+def rooms() -> dict[str, str]:
+    raw = load_config().get("rooms")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in raw.items() if str(k).strip() and str(v).strip()}
+
+
+def spatial_block() -> str:
+    """按当前场景生成【空间】【叙事】两段,追加进 system 提示。
+
+    三个场景:
+    - together_at_home: 两人在家共处,可写肢体互动 + 房间家具;
+    - away: 用户出门,AI 独自在家,隔着手机聊天 → 短消息风格,不写肢体互动;
+    - together_out: 两人一起出门,可写外部环境 + 同行互动,不写家里的摆设。
+    """
+    p = presence()
+    scenario = p["scenario"] if p["scenario"] in SCENARIO_IDS else "together_at_home"
+    room = str(p["room"] or "").strip()
+    room_desc = rooms().get(room, "")
+    guard = "以上只是空间与环境信息,不改变你的人格和说话方式。"
+
+    if scenario == "away":
+        spatial = "【空间】现在用户出门在外,你一个人留在家里,两人通过手机文字聊天。"
+        narrative = "【叙事】这是隔着屏幕的远距聊天:回复像发消息一样简短轻快,不描写牵手、靠近等此刻无法实现的肢体互动。"
+        return f"{spatial}\n{narrative}\n{guard}"
+
+    if scenario == "together_out":
+        spatial = "【空间】现在你和用户一起出门在外。"
+        narrative = "【叙事】你们正在外面:可以描写周围环境、天气与并肩同行的互动,但不描写家里才有的家具陈设。"
+        return f"{spatial}\n{narrative}\n{guard}"
+
+    # together_at_home
+    if room and room_desc:
+        spatial = f"【空间】现在你和用户一起待在家里,当前在「{room}」。{room_desc}"
+    elif room:
+        spatial = f"【空间】现在你和用户一起待在家里,当前在「{room}」。"
+    else:
+        spatial = "【空间】现在你和用户一起待在家里。"
+    narrative = "【叙事】你们真实共处一室:可以自然描写肢体动作、距离、触碰以及房间里的家具物品,动作与对话融为一体。"
+    return f"{spatial}\n{narrative}\n{guard}"
+
 def temperature() -> float:
     try:
         v = float(load_config().get("temperature", TEMPERATURE))
@@ -551,6 +613,9 @@ def build_messages(text: str, *, before_id: int | None = None, session_id: str =
             "\n\nThe following user-injected rules are currently active and must be followed:\n\n"
             + "\n\n".join(blocks)
         )
+    presence_block = spatial_block()
+    if presence_block:
+        system_text += "\n\n" + presence_block
     if warm_block:
         system_text += warm_block
     messages = [{"role": "system", "content": system_text}]
@@ -594,6 +659,8 @@ def public_config() -> dict[str, Any]:
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "warm_enabled": bool(warm_cfg().get("enabled", False)),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
+        "presence": presence(),
+        "rooms": rooms(),
         "proactive": proactive_public(),
         "active_session": active_session_id(),
         "sessions": session_rows(),
@@ -707,6 +774,23 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
                 raise HTTPException(status_code=400, detail=f"MCP row {pos + 1}: url required")
             new_servers.append(entry)
         cfg["mcp_servers"] = new_servers
+    if isinstance(body.get("presence"), dict):
+        p = body["presence"]
+        # 先继承已有值,否则前后端只发部分字段(如仅 scenario)会误清 room
+        cur = dict(PRESENCE_DEFAULTS)
+        existing = cfg.get("presence")
+        if isinstance(existing, dict):
+            for k in PRESENCE_DEFAULTS:
+                if k in existing:
+                    cur[k] = existing[k]
+        if isinstance(p.get("scenario"), str) and p["scenario"] in SCENARIO_IDS:
+            cur["scenario"] = p["scenario"]
+        if isinstance(p.get("room"), str):
+            cur["room"] = str(p["room"]).strip()
+        cfg["presence"] = cur
+    if isinstance(body.get("rooms"), dict):
+        cleaned = {str(k).strip(): str(v).strip() for k, v in body["rooms"].items() if str(k).strip() and str(v).strip()}
+        cfg["rooms"] = cleaned
     if isinstance(body.get("proactive"), dict):
         p = body["proactive"]
         cur = proactive_cfg()

@@ -1359,6 +1359,44 @@
   }
   .inject-entry-del:hover{ color:var(--text); }
 
+  /* ── 空间状态:聊天页顶部胶囊 + 切换浮层 + 房间列表 ── */
+  .presence-capsule{
+    appearance:none; -webkit-appearance:none; border:1px solid var(--card-line);
+    background: var(--card-bg); color: var(--text-soft);
+    font-family: var(--font-en), var(--font-cn);
+    font-size: clamp(10.5px, 2.6vw, 12px);
+    border-radius:999px; padding:3px 11px; margin-top:5px;
+    cursor:pointer; line-height:1.45;
+    transition: border-color .2s ease, color .2s ease;
+  }
+  .presence-scenarios{ display:grid; gap:8px; }
+  .presence-slot{
+    display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+    border:1px solid var(--card-line); border-radius:14px;
+    background: var(--field-bg); color: var(--text);
+    padding:11px 12px; font: inherit; cursor:pointer;
+    transition: border-color .2s ease;
+  }
+  .presence-slot.active{ border-color: var(--accent); }
+  .presence-emoji{ font-size:21px; line-height:1; }
+  .presence-slot-copy{ display:grid; gap:2px; min-width:0; }
+  .presence-slot-copy strong{ font-size:14px; font-weight:600; }
+  .presence-slot-copy small{ font-size:11.5px; color: var(--text-soft); }
+  .presence-rooms-title{ font-size:12.5px; color: var(--text-soft); margin:6px 2px 0; }
+  .presence-rooms-chips{ display:flex; flex-wrap:wrap; gap:7px; margin-top:6px; }
+  .presence-chip{
+    border:1px solid var(--card-line); background: var(--field-bg);
+    color: var(--text-soft); border-radius:999px; padding:7px 13px;
+    font: inherit; font-size:12.5px; cursor:pointer;
+  }
+  .presence-chip.active{ border-color: var(--accent); color: var(--accent); }
+  .presence-manage{
+    margin-top:6px; align-self:flex-start; border:none; background:transparent;
+    color: var(--accent); font: inherit; font-size:13px; cursor:pointer; padding:8px 2px;
+  }
+  .room-rows{ display:grid; gap:6px; margin:4px 0 2px; }
+  .room-desc-label{ color:var(--text-soft); font-size:11px; }
+
   /* action rows */
   .action-row{
     display:flex; align-items:center; gap:13px;
@@ -2225,6 +2263,7 @@
     <div class="peerpill">
       <span class="name" id="peerName">Claude</span>
       <span class="status" id="status">connecting…</span>
+      <button class="presence-capsule" id="presenceCapsule" type="button" title="切换场景" aria-label="切换场景" hidden>🏠 在家</button>
     </div>
     <div class="header-actions" aria-label="通话和更多操作">
       <button class="topbtn sessions" id="sessionBtn" type="button" aria-label="API 窗口" title="API 窗口">
@@ -2299,6 +2338,36 @@
       <button class="edit-btn primary" id="editSaveBtn" type="button">保存</button>
     </div>
     <textarea id="editTextEl" rows="5" maxlength="10000" placeholder="写下新的内容…"></textarea>
+  </div>
+</div>
+
+<!-- ── 空间切换浮层 ── -->
+<div class="edit-overlay" id="presenceOverlay" aria-hidden="true">
+  <div class="edit-scrim" id="presenceScrim"></div>
+  <div class="edit-sheet" role="dialog" aria-modal="true" aria-label="切换场景">
+    <div class="edit-head">
+      <strong class="edit-title">现在你们在哪儿？</strong>
+      <button class="edit-btn ghost" id="presenceCloseBtn" type="button">完成</button>
+    </div>
+    <div class="presence-scenarios" id="presenceScenarios">
+      <button type="button" value="together_at_home" class="presence-slot">
+        <span class="presence-emoji">🏠</span>
+        <span class="presence-slot-copy"><strong>在家（一起）</strong><small>两个人在家，有肢体互动和家具</small></span>
+      </button>
+      <button type="button" value="away" class="presence-slot">
+        <span class="presence-emoji">📱</span>
+        <span class="presence-slot-copy"><strong>我出门了</strong><small>他一个人在家，你俩手机聊天</small></span>
+      </button>
+      <button type="button" value="together_out" class="presence-slot">
+        <span class="presence-emoji">🚶</span>
+        <span class="presence-slot-copy"><strong>一起出门</strong><small>两个人都在外面</small></span>
+      </button>
+    </div>
+    <div id="presenceRoomsWrap" hidden>
+      <div class="presence-rooms-title">在家 · 选个房间（不选 = 不指定）</div>
+      <div class="presence-rooms-chips" id="presenceRoomChips"></div>
+    </div>
+    <button class="presence-manage" id="presenceManageBtn" type="button">去设置里编辑房间描述 →</button>
   </div>
 </div>
 
@@ -2409,6 +2478,10 @@
           <button class="config-entry" id="openProactiveConfigBtn" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.6 0-3.1-.4-4.3-1.2L3 20l1.2-5.2A8.5 8.5 0 1 1 21 11.5z"/><path d="M7.8 11.5h7.4M11.5 7.8v7.4"/></svg>
             <span class="config-entry-copy"><strong>主动消息</strong><span id="proactiveEntryStatus">按上下文自然发起聊天</span></span>
+          </button>
+          <button class="config-entry" id="openRoomConfigBtn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
+            <span class="config-entry-copy"><strong>空间与房间</strong><span id="roomEntryStatus">场景切换 · 房间描述</span></span>
           </button>
           <button class="config-entry" id="openDataConfigBtn" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
@@ -2567,6 +2640,25 @@
         </div>
         <div class="config-actions"><button class="config-action primary" id="proactiveSaveBtn" type="button">保存设置</button></div>
         <div class="push-hint" id="proactiveConfigHint"></div>
+      </section>
+
+      <!-- ── 空间与房间 ── -->
+      <section class="settings-card config-view" id="roomConfigView">
+        <div class="config-view-head"><button class="config-view-back" data-config-back type="button" aria-label="返回连接与工具">‹</button><div class="config-view-title"><strong>空间与房间</strong><span>只写空间和环境，不改变人格</span></div></div>
+        <div class="config-fields">
+          <div class="config-field-label">当前场景 <i class="info-i" title="决定他此刻的说话方式。在家：两个人在场，可以写肢体互动和家具；我出门了：你俩隔着手机聊天，他回复短消息风格；一起出门：描写外面环境。人格不受影响。">i</i></div>
+          <div class="segmented" id="scenarioSeg" role="group" aria-label="场景切换">
+            <button type="button" value="together_at_home">🏠 在家（一起）</button>
+            <button type="button" value="away">📱 我出门了</button>
+            <button type="button" value="together_out">🚶 一起出门</button>
+          </div>
+          <div class="config-field-label" id="roomSectionLabel">房间描述（在家时，告诉他你在哪个房间、周围有什么） <i class="info-i" title="每个房间一行：名字 + 环境描述。切换房间在聊天页顶部的小胶囊里点一下就行。这里只负责描写空间，不写人格指令。">i</i></div>
+          <div class="room-rows" id="roomList"></div>
+          <button class="config-action ghost" id="addRoomBtn" type="button">＋ 添加房间</button>
+          <div class="push-hint" id="roomNoteHint">这里只写空间和环境；人格始终由「AI 人设」统一决定，不随房间变化。</div>
+        </div>
+        <div class="config-actions"><button class="config-action primary" id="roomSaveBtn" type="button">保存空间设置</button></div>
+        <div class="push-hint" id="roomConfigHint"></div>
       </section>
 
       <!-- ── 数据管理 ── -->
@@ -2852,6 +2944,9 @@ const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), hi
 const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
 const proactiveConfigView = $("#proactiveConfigView"), openProactiveConfigBtn = $("#openProactiveConfigBtn"), proactiveEnabledInput = $("#proactiveEnabledInput"), proactiveIdleInput = $("#proactiveIdleInput"), proactiveCooldownInput = $("#proactiveCooldownInput"), proactiveMaxDayInput = $("#proactiveMaxDayInput"), proactiveQuietEnabledInput = $("#proactiveQuietEnabledInput"), proactiveQuietStartInput = $("#proactiveQuietStartInput"), proactiveQuietEndInput = $("#proactiveQuietEndInput"), proactiveTzSelect = $("#proactiveTzSelect"), proactiveSaveBtn = $("#proactiveSaveBtn"), proactiveConfigHint = $("#proactiveConfigHint"), proactiveEntryStatus = $("#proactiveEntryStatus");
 const dataConfigView = $("#dataConfigView"), openDataConfigBtn = $("#openDataConfigBtn"), dataEntryStatus = $("#dataEntryStatus");
+const roomConfigView = $("#roomConfigView"), openRoomConfigBtn = $("#openRoomConfigBtn"), roomEntryStatus = $("#roomEntryStatus");
+const scenarioSeg = $("#scenarioSeg"), roomList = $("#roomList"), addRoomBtn = $("#addRoomBtn"), roomSaveBtn = $("#roomSaveBtn"), roomConfigHint = $("#roomConfigHint");
+const presenceCapsule = $("#presenceCapsule"), presenceOverlay = $("#presenceOverlay"), presenceScrim = $("#presenceScrim"), presenceCloseBtn = $("#presenceCloseBtn"), presenceScenarios = $("#presenceScenarios"), presenceRoomsWrap = $("#presenceRoomsWrap"), presenceRoomChips = $("#presenceRoomChips"), presenceManageBtn = $("#presenceManageBtn");
 const exportScopeSeg = $("#exportScopeSeg"), exportFormatSeg = $("#exportFormatSeg"), exportChatBtn = $("#exportChatBtn"), exportHint = $("#exportHint");
 const clearSessionList = $("#clearSessionList"), clearSessionHint = $("#clearSessionHint"), clearCacheBtn = $("#clearCacheBtn"), clearCacheHint = $("#clearCacheHint");
 let exportScope = "current";   // "current" | "all"
@@ -3955,6 +4050,7 @@ function setConfigView(view){
   if (modelParamsConfigView) modelParamsConfigView.classList.toggle("active", view === "model-params");
   if (injectConfigView) injectConfigView.classList.toggle("active", view === "inject");
   if (proactiveConfigView) proactiveConfigView.classList.toggle("active", view === "proactive");
+  if (roomConfigView) roomConfigView.classList.toggle("active", view === "room");
   if (dataConfigView) dataConfigView.classList.toggle("active", view === "data");
 }
 function resetMcpForm(){
@@ -3981,6 +4077,12 @@ function updateConfigEntryStatus(){
   if (proactiveEntryStatus) {
     const p = savedLoopConfig && savedLoopConfig.proactive;
     proactiveEntryStatus.textContent = p && p.enabled ? `已开启 · 今日已发 ${p.sent_today ?? 0} 条` : "按上下文自然发起聊天";
+  }
+  if (roomEntryStatus) {
+    const p = savedLoopConfig && savedLoopConfig.presence;
+    const meta = p ? presenceMeta(p.scenario) : null;
+    const room = p && p.room ? ` · ${p.room}` : "";
+    roomEntryStatus.textContent = meta ? `${meta.full}${room}` : "场景切换 · 房间描述";
   }
 }
 const MCP_TOOLS_CACHE = {};
@@ -4232,6 +4334,7 @@ async function loadLoopConfig(){
     renderMcpList();
     updateConfigEntryStatus();
     syncIdentityFromLoopConfig(savedLoopConfig);
+    applyPresenceFromConfig(savedLoopConfig);
   }catch(_){
     if (apiConfigHint) apiConfigHint.textContent = "暂时无法读取 API 配置";
   }
@@ -4522,6 +4625,174 @@ injectSaveBtn?.addEventListener("click", async () => {
   const ok = await saveLoopConfig({ injections: { enabled, entries } }, hint);
   if (ok) updateInjectEntryStatus(enabled, entries.length);
 });
+
+/* ════════ 空间与房间（presence / rooms） ════════ */
+const SCENARIO_META = {
+  together_at_home: { emoji: "🏠", full: "在家（一起）", capsule: "🏠 在家" },
+  away: { emoji: "📱", full: "我出门了", capsule: "📱 我出门了" },
+  together_out: { emoji: "🚶", full: "一起出门", capsule: "🚶 一起出门" },
+};
+function presenceMeta(id){ return SCENARIO_META[id] || SCENARIO_META.together_at_home; }
+function presenceCapsuleText(p){
+  if (!p) return SCENARIO_META.together_at_home.capsule;
+  const meta = presenceMeta(p.scenario);
+  if (p.scenario === "together_at_home" && p.room) return `${meta.capsule} · ${p.room}`;
+  return meta.capsule;
+}
+function roomRowElement(name, desc){
+  const box = document.createElement("div");
+  box.className = "inject-entry";
+  const head = document.createElement("div");
+  head.className = "inject-entry-head";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.maxLength = 24;
+  nameInput.className = "inject-entry-title";
+  nameInput.placeholder = "房间名称（如：客厅）";
+  nameInput.value = name || "";
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "inject-entry-del";
+  del.textContent = "删除";
+  del.addEventListener("click", () => box.remove());
+  head.append(nameInput, del);
+  const descArea = document.createElement("textarea");
+  descArea.className = "config-textarea";
+  descArea.rows = 3;
+  descArea.placeholder = "描述这个房间的布局、家具、光线…（只写空间，不写人格）";
+  descArea.value = desc || "";
+  box.append(head, descArea);
+  return box;
+}
+function renderRoomRows(rooms){
+  if (!roomList) return;
+  roomList.textContent = "";
+  const entries = Object.entries(rooms || {});
+  if (!entries.length) entries.push(["", ""]);
+  entries.forEach(([k, v]) => roomList.appendChild(roomRowElement(k, v)));
+}
+function renderPresenceUi(p, rooms){
+  p = p || { scenario: "together_at_home", room: "" };
+  const scenario = p.scenario || "together_at_home";
+  if (scenarioSeg) scenarioSeg.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.value === scenario));
+  if (presenceScenarios) presenceScenarios.querySelectorAll(".presence-slot").forEach(b => b.classList.toggle("active", b.value === scenario));
+  if (presenceRoomsWrap) presenceRoomsWrap.hidden = scenario !== "together_at_home";
+  if (presenceRoomChips){
+    presenceRoomChips.textContent = "";
+    if (scenario === "together_at_home"){
+      const names = Object.keys(rooms || {});
+      if (!names.length){
+        const empty = document.createElement("span");
+        empty.className = "presence-rooms-title";
+        empty.textContent = "还没有房间，点下方按钮去添加";
+        presenceRoomChips.appendChild(empty);
+      }
+      names.forEach(name => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "presence-chip" + (name === p.room ? " active" : "");
+        chip.textContent = name;
+        chip.addEventListener("click", () => savePresence({ presence: { room: name } }, null));
+        presenceRoomChips.appendChild(chip);
+      });
+    }
+  }
+}
+function applyPresenceFromConfig(cfg){
+  if (!cfg || !presenceCapsule) return;
+  const p = cfg.presence || { scenario: "together_at_home", room: "" };
+  presenceCapsule.hidden = false;
+  presenceCapsule.textContent = presenceCapsuleText(p);
+  renderPresenceUi(p, cfg.rooms || {});
+}
+async function savePresence(patch, hint){
+  /* 本地先变（点一下就亮），保存失败再回读真实配置 */
+  if (savedLoopConfig){
+    const next = {
+      presence: Object.assign({}, savedLoopConfig.presence || {}, patch.presence || {}),
+      rooms: savedLoopConfig.rooms || {},
+    };
+    applyPresenceFromConfig(next);
+    savedLoopConfig.presence = next.presence;   // roomEntryStatus / 后续读取用
+  }
+  const ok = await saveLoopConfig(patch, hint);
+  if (!ok && !USE_MOCK) loadLoopConfig().catch(() => {});
+}
+function openPresence(){
+  if (!presenceOverlay) return;
+  const p = savedLoopConfig && savedLoopConfig.presence;
+  const rooms = savedLoopConfig && savedLoopConfig.rooms;
+  renderPresenceUi(p, rooms || {});
+  presenceOverlay.setAttribute("aria-hidden", "false");
+  presenceOverlay.classList.add("open");
+  buzz(8);
+}
+function closePresence(){
+  if (!presenceOverlay) return;
+  presenceOverlay.classList.remove("open");
+  presenceOverlay.setAttribute("aria-hidden", "true");
+}
+async function loadRoomConfig(){
+  if (USE_MOCK || !secret) return;
+  try{
+    const r = await fetch(`${API_BASE}/app/loop_config`, { headers: authHeaders() });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    savedLoopConfig = cfg;
+    renderRoomRows(cfg.rooms || {});
+    renderPresenceUi(cfg.presence, cfg.rooms || {});
+    updateConfigEntryStatus();
+  }catch(_){
+    if (roomConfigHint) roomConfigHint.textContent = "暂时无法读取房间配置";
+  }
+}
+presenceCapsule?.addEventListener("click", openPresence);
+presenceScrim?.addEventListener("click", closePresence);
+presenceCloseBtn?.addEventListener("click", closePresence);
+presenceManageBtn?.addEventListener("click", () => {
+  closePresence();
+  openProfile();
+  setConfigView("room");
+  loadRoomConfig();
+});
+openRoomConfigBtn?.addEventListener("click", () => { setConfigView("room"); loadRoomConfig(); });
+if (presenceScenarios){
+  presenceScenarios.addEventListener("click", e => {
+    const slot = e.target.closest(".presence-slot");
+    if (!slot) return;
+    savePresence({ presence: { scenario: slot.value } }, null);
+  });
+}
+if (scenarioSeg){
+  scenarioSeg.addEventListener("click", e => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    scenarioSeg.querySelectorAll("button").forEach(b => b.classList.toggle("active", b === btn));
+  });
+}
+addRoomBtn?.addEventListener("click", () => {
+  if (!roomList) return;
+  const el = roomRowElement("", "");
+  roomList.appendChild(el);
+  const t = el.querySelector(".inject-entry-title");
+  if (t) t.focus();
+});
+roomSaveBtn?.addEventListener("click", async () => {
+  const hint = roomConfigHint;
+  const scenario = (scenarioSeg && scenarioSeg.querySelector("button.active")) ? scenarioSeg.querySelector("button.active").value : "together_at_home";
+  const collected = {};
+  if (roomList){
+    roomList.querySelectorAll(".inject-entry").forEach(box => {
+      const name = box.querySelector(".inject-entry-title")?.value?.trim() || "";
+      const desc = box.querySelector("textarea")?.value?.trim() || "";
+      if (name) collected[name] = desc;
+    });
+  }
+  let room = savedLoopConfig && savedLoopConfig.presence ? savedLoopConfig.presence.room || "" : "";
+  if (room && !Object.prototype.hasOwnProperty.call(collected, room)) room = "";   // 当前房间被删了则回到未指定
+  await savePresence({ presence: { scenario, room }, rooms: collected }, hint);
+});
+
 $("#personaSaveBtn")?.addEventListener("click", async () => {
   const hint = personaConfigHint;
   const persona = (personaInput?.value || "").trim();
@@ -4689,6 +4960,7 @@ if (mcpList) mcpList.addEventListener("click", event => {
 });
 setConfigView("hub");
 loadLoopConfig();
+if (USE_MOCK) applyPresenceFromConfig({ presence: { scenario: "together_at_home", room: "" }, rooms: {} });
 
 function shortSid(sid){
   if (!sid) return "(none)";
@@ -7146,9 +7418,12 @@ editSaveBtnEl?.addEventListener("click", doEditSave);
 editCancelBtnEl?.addEventListener("click", closeEditOverlay);
 editScrimEl?.addEventListener("click", closeEditOverlay);
 window.addEventListener("keydown", (e) => {
-  if (!editOverlayEl.classList.contains("open")) return;
-  if (e.key === "Escape"){ e.preventDefault(); closeEditOverlay(); }
-  else if (e.key === "Enter" && !e.shiftKey && !composing){ e.preventDefault(); doEditSave(); }
+  if (editOverlayEl.classList.contains("open")){
+    if (e.key === "Escape"){ e.preventDefault(); closeEditOverlay(); }
+    else if (e.key === "Enter" && !e.shiftKey && !composing){ e.preventDefault(); doEditSave(); }
+    return;
+  }
+  if (presenceOverlay && presenceOverlay.classList.contains("open") && e.key === "Escape"){ e.preventDefault(); closePresence(); }
 });
 
 /* ════════════ 停止生成 ════════════ */
