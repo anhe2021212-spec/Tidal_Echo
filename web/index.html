@@ -260,7 +260,7 @@
   .typing-dots i:nth-child(3){ animation-delay:.32s; }
   @keyframes typingDot{ 0%,70%,100%{ transform:translateY(0); opacity:.4; } 35%{ transform:translateY(-3px); opacity:1; } }
   .backbtn{
-    position:absolute; left: calc(var(--side-pad) + 4px); top: calc(env(safe-area-inset-top) + clamp(14px, 2.5vw, 36px));
+    position:absolute; left: calc(var(--side-pad) + 4px); /* 垂直位置交给 topbar 的 flex 居中,与 peerpill 对齐 */
     width:36px; height:36px; border-radius:50%; padding:0; flex:none; cursor:pointer;
     border: none; background: transparent;
     color: var(--text); display:grid; place-items:center;
@@ -270,8 +270,7 @@
   .backbtn svg{ width:22px; height:22px; display:block; margin-left:-2px; }
   .header-actions{
     position:absolute;
-    right: calc(var(--side-pad) - 2px);
-    top: calc(env(safe-area-inset-top) + clamp(14px, 2.5vw, 36px));
+    right: calc(var(--side-pad) - 2px); /* 垂直位置同 backbtn/peerpill,由 flex 居中 */
     display:flex;
     align-items:center;
     justify-content:flex-end;
@@ -1409,9 +1408,9 @@
     .peerpill{ max-width: calc(100% - 120px); }
     .peerpill .name{ font-size: 18px; }
     .peerpill .status{ font-size: 12px; margin-top: 3px; }
-    .backbtn{ left: 16px; top: calc(env(safe-area-inset-top) + 16px); width: 32px; height: 32px; }
+    .backbtn{ left: 16px; width: 32px; height: 32px; }
     .backbtn svg{ width: 20px; height: 20px; }
-    .header-actions{ right: 16px; top: calc(env(safe-area-inset-top) + 16px); gap: 12px; height:32px; }
+    .header-actions{ right: 16px; gap: 12px; height:32px; }
     .topbtn{ width:32px; height:32px; }
     .topbtn svg{ width:22px; height:22px; }
     .topbtn.more svg{ width:20px; height:20px; }
