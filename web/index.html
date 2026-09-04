@@ -227,7 +227,7 @@
     border: none;
     border-radius: 0;
     padding: 0;
-    max-width: min(560px, calc(100% - 220px));
+    max-width: min(680px, calc(100% - 170px));
     text-align:center;
   }
   .peerpill .name{
@@ -1406,7 +1406,7 @@
       --header-h: 56px;
       --avatar-size: 32px;
     }
-    .peerpill{ max-width: calc(100% - 200px); }
+    .peerpill{ max-width: calc(100% - 120px); }
     .peerpill .name{ font-size: 18px; }
     .peerpill .status{ font-size: 12px; margin-top: 3px; }
     .backbtn{ left: 16px; top: calc(env(safe-area-inset-top) + 16px); width: 32px; height: 32px; }
@@ -3660,6 +3660,8 @@ function commitNameEdit(){
     else localStorage.removeItem(REMARK_KEY);
   }catch(e){}
   applyRemark(value);
+  /* 同步到服务端 loop 配置：重新部署/换设备后名字仍在 */
+  if (!USE_MOCK && secret) saveLoopConfig({ ai_name: value }).then((ok) => { if (!ok) showToast("名字已在本机生效，服务端同步失败"); });
   profileNameInput.classList.add("hidden");
   profileNameEl.classList.remove("hidden");
 }
@@ -3678,14 +3680,41 @@ if (profileNameInput){
   profileNameInput.addEventListener("blur", commitNameEdit);
 }
 
+/* 头像压缩到 ≤512px 的 JPEG dataURL，既轻渲染又满足服务端 3MB 上限 */
+function squeezeAvatar(dataUrl, cb){
+  try{
+    const img = new Image();
+    img.onload = () => {
+      try{
+        const m = Math.max(img.width, img.height);
+        const scale = m > 512 ? 512 / m : 1;
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        cb(c.toDataURL("image/jpeg", 0.85));
+      }catch(e){ cb(null); }
+    };
+    img.onerror = () => cb(null);
+    img.src = dataUrl;
+  }catch(e){ cb(null); }
+}
+function commitAvatar(dataUrl){
+  applyAvatar(dataUrl);
+  try{ localStorage.setItem(AVATAR_KEY, dataUrl); }catch(e){}
+  /* 同步到服务端 loop 配置：重新部署/换设备后头像仍在 */
+  if (!USE_MOCK && secret) saveLoopConfig({ ai_avatar: dataUrl }).then((ok) => { if (!ok) showToast("头像已在本机生效，服务端同步失败"); });
+}
 if (avatarInput) avatarInput.addEventListener("change", () => {
   const f = avatarInput.files && avatarInput.files[0];
   if (!f) return;
   const r = new FileReader();
   r.onload = () => {
-    const dataUrl = r.result;
-    applyAvatar(dataUrl);
-    try{ localStorage.setItem(AVATAR_KEY, dataUrl); }catch(e){}
+    const raw = typeof r.result === "string" ? r.result : "";
+    squeezeAvatar(raw, (out) => {
+      if (out || raw) commitAvatar(out || raw);
+      else showToast("无法读取该图片");
+    });
   };
   r.readAsDataURL(f);
   avatarInput.value = "";
@@ -4182,8 +4211,33 @@ async function loadLoopConfig(){
     renderApiList();
     renderMcpList();
     updateConfigEntryStatus();
+    syncIdentityFromLoopConfig(savedLoopConfig);
   }catch(_){
     if (apiConfigHint) apiConfigHint.textContent = "暂时无法读取 API 配置";
+  }
+}
+
+/* 名字/头像以服务端 loop 配置为准：登录后拉一次，服务端有就用服务端的；
+   服务端没有而本机有（老版本遗存）则反推一次到服务端，保证重装 PWA 不丢。 */
+let identitySynced = false;
+function syncIdentityFromLoopConfig(cfg){
+  if (!cfg || identitySynced) return;
+  identitySynced = true;
+  const name = (cfg.ai_name || "").trim();
+  const avatar = cfg.ai_avatar || "";
+  let localName = "", localAvatar = "";
+  try{ localName = localStorage.getItem(REMARK_KEY) || ""; localAvatar = localStorage.getItem(AVATAR_KEY) || ""; }catch(_){}
+  if (avatar){
+    applyAvatar(avatar);
+    try{ localStorage.setItem(AVATAR_KEY, avatar); }catch(_){}
+  }else if (localAvatar){
+    saveLoopConfig({ ai_avatar: localAvatar });
+  }
+  if (name){
+    applyRemark(name);
+    try{ localStorage.setItem(REMARK_KEY, name); }catch(_){}
+  }else if (localName){
+    saveLoopConfig({ ai_name: localName });
   }
 }
 function buzz(ms){
@@ -4454,8 +4508,8 @@ $("#personaSaveBtn")?.addEventListener("click", async () => {
   const ai_name = (aiNameInput?.value || "").trim();
   await saveLoopConfig({ persona, ai_name }, hint);
   if (ai_name) {
-    const nameEl = document.querySelector(".peerpill .name");
-    if (nameEl) nameEl.textContent = ai_name;
+    applyRemark(ai_name);
+    try{ localStorage.setItem(REMARK_KEY, ai_name); }catch(_){}
   }
 });
 $("#modelParamsSaveBtn")?.addEventListener("click", async () => {

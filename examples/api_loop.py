@@ -600,6 +600,7 @@ def public_config() -> dict[str, Any]:
         "history_n": history_n(),
         "persona": cfg.get("persona", ""),
         "ai_name": cfg.get("ai_name", ""),
+        "ai_avatar": str(cfg.get("ai_avatar") or ""),
         "temperature": cfg.get("temperature", TEMPERATURE),
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
@@ -633,6 +634,10 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
         cfg["persona"] = str(body.get("persona") or "").strip()
     if "ai_name" in body:
         cfg["ai_name"] = str(body.get("ai_name") or "").strip()
+    if "ai_avatar" in body:
+        # 只收小尺寸的 data:image/ dataURL(前端已压到 ~512px);非法或过大则清空
+        raw = str(body.get("ai_avatar") or "")
+        cfg["ai_avatar"] = raw if (raw.startswith("data:image/") and len(raw) <= 3_000_000) else ""
     if "temperature" in body:
         try:
             cfg["temperature"] = max(0.0, min(2.0, float(body["temperature"])))
