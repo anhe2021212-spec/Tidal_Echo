@@ -608,6 +608,7 @@ def public_config() -> dict[str, Any]:
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
         "gateway_session_id": gateway_session_id(),
+        "warm_enabled": bool(warm_cfg().get("enabled", False)),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "proactive": proactive_public(),
         "active_session": active_session_id(),
@@ -667,6 +668,11 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
             pass
     if "gateway_session_id" in body:
         cfg["gateway_session_id"] = str(body.get("gateway_session_id") or "").strip()
+    if "warm_enabled" in body:
+        wl = cfg.get("warm_layer")
+        wl = dict(wl) if isinstance(wl, dict) else {}
+        wl["enabled"] = bool(body.get("warm_enabled"))
+        cfg["warm_layer"] = wl
     if "injections" in body:
         inj = body.get("injections")
         if isinstance(inj, dict):
@@ -1186,13 +1192,13 @@ def warm_cfg() -> dict[str, Any]:
         cfg = {}
     try:
         return {
-            "enabled": bool(cfg.get("enabled", True)),
+            "enabled": bool(cfg.get("enabled", False)),
             "idle_minutes": max(1, int(cfg.get("idle_minutes", 15))),
             "max_tokens": max(200, int(cfg.get("max_tokens", 2000))),
             "cache_minutes": max(10, int(cfg.get("cache_minutes", 30))),
         }
     except Exception:
-        return {"enabled": True, "idle_minutes": 15, "max_tokens": 2000, "cache_minutes": 30}
+        return {"enabled": False, "idle_minutes": 15, "max_tokens": 2000, "cache_minutes": 30}
 
 
 async def _brain_server() -> dict[str, Any] | None:
