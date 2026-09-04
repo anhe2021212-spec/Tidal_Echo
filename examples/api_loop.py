@@ -607,7 +607,7 @@ def public_config() -> dict[str, Any]:
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
-        "gateway_session_header": gateway_session_header(),
+        "gateway_session_id": gateway_session_id(),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "proactive": proactive_public(),
         "active_session": active_session_id(),
@@ -665,6 +665,8 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
             cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
         except Exception:
             pass
+    if "gateway_session_id" in body:
+        cfg["gateway_session_id"] = str(body.get("gateway_session_id") or "").strip()
     if "injections" in body:
         inj = body.get("injections")
         if isinstance(inj, dict):
@@ -1111,7 +1113,7 @@ async def mcp_call(server: dict[str, Any], method: str, params: dict[str, Any] |
     }
     if server.get("token"):
         headers["Authorization"] = f"Bearer {server['token']}"
-    async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
         if method != "initialize" and url not in MCP_SESSIONS:
             initialize = {
                 "jsonrpc": "2.0",
@@ -1345,53 +1347,66 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
     print(f"[api_loop:complete_chat] request body keys: {body_summary} | sys_len={len(sys_content)} warm={'Y' if '苏醒垫层' in sys_content else 'N'}" + (f" | sid={sid}" if sid else " | sid=-"))
 
     finish_reason_val = None
-    async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
-        async with client.stream(
-            "POST",
-            route["url"].rstrip("/") + "/chat/completions",
-            headers=req_headers,
-            json=body,
-        ) as resp:
-            if resp.status_code >= 400:
-                err_detail = ""
-                try:
-                    lines = [line async for line in resp.aiter_lines()]
-                    body_text = "\n".join(lines)[:500]
-                    err_detail = body_text or str(resp.status_code)
-                except Exception:
-                    err_detail = str(resp.status_code)
-                raise HTTPException(status_code=max(resp.status_code, 400), detail=err_detail)
-            async for line in resp.aiter_lines():
-                line = line.strip()
-                if not line.startswith("data:"):
-                    continue
-                data_str = line[5:].strip()
-                if data_str == "[DONE]":
-                    break
-                try:
-                    ev = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                if tools and len(raw_samples) < 3:
-                    raw_samples.append(data_str[:200])
-                n = normalize_stream_event(ev)
-                if n["usage"]:
-                    usage = n["usage"]
-                if n["finish_reason"]:
-                    finish_reason_val = n["finish_reason"]
-                if n["role"]:
-                    raw_msg["role"] = n["role"]
-                if n["content"]:
-                    text_parts.append(n["content"])
-                if n["thinking"]:
-                    thinking_parts.append(n["thinking"])
-                    if on_thinking:
-                        try:
-                            await on_thinking(n["thinking"])
-                        except Exception:
-                            pass
-                if n["tool_calls"]:
-                    accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
+    # OB 网关在 tool 续轮 / 召回阶段可能长时间不出字节(几十秒到几分钟都有),
+    # read 只有 120s 时会误杀"还在正常工作"的流,导致 PWA 直接看到
+    # "API 调用失败:ReadTimeout"。read 放宽到 600s,只保 connect 的 30s。
+    client_timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
+    try:
+        async with httpx.AsyncClient(timeout=client_timeout, trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                route["url"].rstrip("/") + "/chat/completions",
+                headers=req_headers,
+                json=body,
+            ) as resp:
+                if resp.status_code >= 400:
+                    err_detail = ""
+                    try:
+                        lines = [line async for line in resp.aiter_lines()]
+                        body_text = "\n".join(lines)[:500]
+                        err_detail = body_text or str(resp.status_code)
+                    except Exception:
+                        err_detail = str(resp.status_code)
+                    raise HTTPException(status_code=max(resp.status_code, 400), detail=err_detail)
+                async for line in resp.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        ev = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if tools and len(raw_samples) < 3:
+                        raw_samples.append(data_str[:200])
+                    n = normalize_stream_event(ev)
+                    if n["usage"]:
+                        usage = n["usage"]
+                    if n["finish_reason"]:
+                        finish_reason_val = n["finish_reason"]
+                    if n["role"]:
+                        raw_msg["role"] = n["role"]
+                    if n["content"]:
+                        text_parts.append(n["content"])
+                    if n["thinking"]:
+                        thinking_parts.append(n["thinking"])
+                        if on_thinking:
+                            try:
+                                await on_thinking(n["thinking"])
+                            except Exception:
+                                pass
+                    if n["tool_calls"]:
+                        accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
+    except httpx.ReadTimeout:
+        # 600s 仍被掐断:若已经拿到正文或工具调用,先交回部分结果(能救一轮是一轮);
+        # 什么都没拿到才抛出去,让 run_model 切换下一个路由。
+        if text_parts or tool_calls_buf:
+            print(f"[api_loop:complete_chat] stream read timeout, salvaging partial: text_chars={sum(len(t) for t in text_parts)}, thinking_chars={sum(len(t) for t in thinking_parts)}, tool_calls={len(tool_calls_buf)}, finish={finish_reason_val}")
+            finish_reason_val = finish_reason_val or "length"
+        else:
+            raise
 
     merged_thinking = merge_thinking(thinking_parts)
 
@@ -1676,27 +1691,42 @@ def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> li
     return messages
 
 
-def gateway_session_header() -> bool:
-    """是否给 Ombre 网关路由带 X-Ombre-Session-Id。默认开启。
-    每个 relay 会话一个新 id,让网关自己的"新窗口"机制、reasoning 续接缓存、
-    记忆注入轮次与去重状态按窗口隔离,不再被恒定的 "main" 跨会话污染。"""
+def gateway_session_id() -> str:
+    """Ombre 网关路由的会话 id(X-Ombre-Session-Id 的值)。
+
+    OB 的 persona 状态、reminder、语义去重、reasoning 缓存全以它为键。
+    每个 relay 窗口都换新 id,OB 就为每个窗口新建一个 persona session ——
+    仪表盘出现 API-xxx 开头的人格,MAIN 里累存的温度(residue/mood/affect)
+    带不过去,说话就变回出厂硬度。所以默认恒为 "main",人格连续;
+    窗口级苏醒靠本 loop 自己每次垫 handoff/feel/whisper,不靠换 id。
+    gateway_session_id 设成 "auto" 才按 relay 窗口隔离;空串 "" = 不发此头。"""
     try:
-        return bool(load_config().get("gateway_session_header", True))
+        cfg = load_config()
+        raw = str(cfg.get("gateway_session_id") or "").strip()
+        if raw:
+            return raw
+        if cfg.get("gateway_session_header") is False:
+            return ""
     except Exception:
-        return True
+        pass
+    return "main"
 
 
 def _route_with_session_header(route: dict[str, Any], session_id: str) -> dict[str, Any]:
-    """仅对 Ombre 网关路由(URL 含 "ombre")附加 X-Ombre-Session-Id=relay 会话 id。"""
-    if not session_id or not gateway_session_header():
+    """仅对 Ombre 网关路由(URL 含 "ombre")附加 X-Ombre-Session-Id。
+    取值策略见 gateway_session_id():默认恒 "main",人格连续;"auto" 才按窗口隔离。"""
+    sid = gateway_session_id()
+    if sid == "auto":
+        sid = str(session_id or "")
+    if not sid:
         return route
     if "ombre" not in str(route.get("url") or "").lower():
         return route
     headers = dict(route.get("headers") or {})
-    if headers.get("X-Ombre-Session-Id") == session_id:
+    if headers.get("X-Ombre-Session-Id") == sid:
         return route
     out = dict(route)
-    out["headers"] = {**headers, "X-Ombre-Session-Id": session_id}
+    out["headers"] = {**headers, "X-Ombre-Session-Id": sid}
     return out
 
 
@@ -1857,6 +1887,8 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
             last_error = f"HTTP {exc.status_code}"
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
+    if last_error:
+        print(f"[api_loop:run_model] all routes failed: last_error={last_error!r}, tried={tried!r}")
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
 
 
