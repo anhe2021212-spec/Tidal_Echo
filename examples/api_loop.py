@@ -1326,7 +1326,12 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
 
     body_keys = [k for k in body if k not in ("messages",)]
     body_summary = {k: (body[k] if k != "tools" else f"[{len(body[k])} tools]") for k in body_keys}
-    print(f"[api_loop:complete_chat] request body keys: {body_summary}")
+    sys_content = ""
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "system":
+            sys_content = str(m.get("content") or "")
+            break
+    print(f"[api_loop:complete_chat] request body keys: {body_summary} | sys_len={len(sys_content)} warm={'Y' if '苏醒垫层' in sys_content else 'N'}")
 
     finish_reason_val = None
     async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
