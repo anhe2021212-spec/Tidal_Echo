@@ -137,16 +137,7 @@ LLM_TEMPERATURE=0.7
 LOOP_STREAM=1
 ```
 
-MCP 工具模式变量（一般不填，有自动探测；仅在第三方中转端工具行为异常时使用）：
-
-```env
-# 逗号分隔的模型名列表：这些模型强制用提示词工具协议（<tool_call> 文本模式），
-# 适用于不支持原生 tools 参数的中转端。免去每次先失败一次才自动切换。
-LLM_PROMPT_TOOLS=<模型名,另一模型名>
-
-# 设为 1 时强制所有模型走原生 tools 参数，禁用自动切换提示词模式（不建议）。
-FORCE_NATIVE_TOOLS=0
-```
+MCP 工具自动探测启用；模型工具调用统一走原生 tools 参数，无需额外配置。
 
 不要把第三方 API 地址误填成完整的 `/chat/completions` 路径。程序会自动在 `LLM_API_BASE` 后面追加 `/chat/completions`。
 

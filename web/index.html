@@ -2425,7 +2425,7 @@
           <input id="apiKeyInput" type="password" placeholder="API Key（留空表示保持原 Key）" autocomplete="off">
           <input id="apiModelInput" type="text" placeholder="模型名称，例如 gpt-4o" autocomplete="off">
           <div class="config-field-label">自定义 Headers（可选，每行一条 key=value）</div>
-          <textarea id="apiHeadersInput" class="config-textarea" rows="2" placeholder="X-Ombre-Session-Id=main" autocomplete="off" spellcheck="false"></textarea>
+          <textarea id="apiHeadersInput" class="config-textarea" rows="2" placeholder="X-Api-Key=sk-xxx&#10;Authorization=Bearer xxx" autocomplete="off" spellcheck="false"></textarea>
         </div>
         <div class="config-actions"><button class="config-action primary" id="apiSaveBtn" type="button">添加 API 路由</button></div>
         <div class="push-hint" id="apiConfigHint"></div>
@@ -2495,8 +2495,6 @@
             <input id="thinkingBudgetInput" class="param-slider" type="range" min="0" max="32768" step="1024" value="0" aria-label="思考预算" oninput="syncParamVal(this)" onchange="syncParamVal(this)">
             <span class="param-val" id="thinkingBudgetInputVal">0</span>
           </div>
-          <div class="config-field-label">网关会话 ID（GATEWAY Session ID）<i class="info-i" title="发给 Ombre 网关的 X-Ombre-Session-Id 头。填 main（推荐）：人格状态一直连续，MAIN 的温度、记忆都带得过来；填 auto：每个聊天窗口独立隔离（仪表盘会出现 API-xxx 开头的新人格）；清空保存则回到默认 main。">i</i></div>
-          <input id="gatewaySessionIdInput" type="text" placeholder="main" autocomplete="off" maxlength="64">
           <div class="config-field-label">苏醒垫层（Warm Layer）<i class="info-i" title="默认关闭。开启后，新会话自动垫 handoff+feel+whisper，聊天空闲超过 15 分钟回来再补 feel+whisper，让他醒过来就带着温度。">i</i></div>
           <label class="param-auto-row">
             <input id="warmEnabledInput" type="checkbox">
@@ -2855,7 +2853,7 @@ const configHubView = $("#configHubView"), apiConfigView = $("#apiConfigView"), 
 const openApiConfigBtn = $("#openApiConfigBtn"), openMcpConfigBtn = $("#openMcpConfigBtn"), apiEntryStatus = $("#apiEntryStatus"), mcpEntryStatus = $("#mcpEntryStatus");
 const personaConfigView = $("#personaConfigView"), modelParamsConfigView = $("#modelParamsConfigView");
 const personaInput = $("#personaInput"), aiNameInput = $("#aiNameInput"), personaSaveBtn = $("#personaSaveBtn"), personaConfigHint = $("#personaConfigHint");
-const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), gatewaySessionIdInput = $("#gatewaySessionIdInput"), warmEnabledInput = $("#warmEnabledInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
+const temperatureInput = $("#temperatureInput"), topPInput = $("#topPInput"), historyNInput = $("#historyNInput"), maxTokensInput = $("#maxTokensInput"), maxTokensAutoCheck = $("#maxTokensAutoInput"), thinkingBudgetInput = $("#thinkingBudgetInput"), warmEnabledInput = $("#warmEnabledInput"), modelParamsSaveBtn = $("#modelParamsSaveBtn"), modelParamsConfigHint = $("#modelParamsConfigHint");
 const injectConfigView = $("#injectConfigView"), openInjectConfigBtn = $("#openInjectConfigBtn"), injectEnabledInput = $("#injectEnabledInput"), injectEntriesList = $("#injectEntriesList"), injectAddBtn = $("#injectAddBtn"), injectSaveBtn = $("#injectSaveBtn"), injectConfigHint = $("#injectConfigHint"), injectEntryStatus = $("#injectEntryStatus");
 const proactiveConfigView = $("#proactiveConfigView"), openProactiveConfigBtn = $("#openProactiveConfigBtn"), proactiveEnabledInput = $("#proactiveEnabledInput"), proactiveIdleInput = $("#proactiveIdleInput"), proactiveCooldownInput = $("#proactiveCooldownInput"), proactiveMaxDayInput = $("#proactiveMaxDayInput"), proactiveQuietEnabledInput = $("#proactiveQuietEnabledInput"), proactiveQuietStartInput = $("#proactiveQuietStartInput"), proactiveQuietEndInput = $("#proactiveQuietEndInput"), proactiveTzSelect = $("#proactiveTzSelect"), proactiveSaveBtn = $("#proactiveSaveBtn"), proactiveConfigHint = $("#proactiveConfigHint"), proactiveEntryStatus = $("#proactiveEntryStatus");
 const dataConfigView = $("#dataConfigView"), openDataConfigBtn = $("#openDataConfigBtn"), dataEntryStatus = $("#dataEntryStatus");
@@ -4233,8 +4231,6 @@ async function loadLoopConfig(){
     setParamSlider(historyNInput, savedLoopConfig.history_n, "24");
     applyMaxTokensConfig(savedLoopConfig.max_tokens);
     setParamSlider(thinkingBudgetInput, savedLoopConfig.thinking_budget, "0");
-    const gsid = String((savedLoopConfig && savedLoopConfig.gateway_session_id) || "").trim();
-    if (gatewaySessionIdInput) gatewaySessionIdInput.value = (gsid && gsid !== "main") ? gsid : "";
     if (warmEnabledInput) warmEnabledInput.checked = !!(savedLoopConfig && savedLoopConfig.warm_enabled);
     
     resetMcpForm();
@@ -4325,8 +4321,6 @@ async function loadModelParamsConfig(){
     setParamSlider($("#historyNInput"), cfg.history_n, "24");
     applyMaxTokensConfig(cfg.max_tokens);
     setParamSlider($("#thinkingBudgetInput"), cfg.thinking_budget, "0");
-    const gsid2 = String((cfg && cfg.gateway_session_id) || "").trim();
-    if (gatewaySessionIdInput) gatewaySessionIdInput.value = (gsid2 && gsid2 !== "main") ? gsid2 : "";
     if (warmEnabledInput) warmEnabledInput.checked = !!(cfg && cfg.warm_enabled);
   }catch{}
 }
@@ -4559,8 +4553,6 @@ $("#modelParamsSaveBtn")?.addEventListener("click", async () => {
   if (maxTokensAutoCheck?.checked) payload.max_tokens = null;
   else if (!isNaN(maxtVal)) payload.max_tokens = maxtVal;
   if (!isNaN(thinkVal)) payload.thinking_budget = thinkVal;
-  const gsidVal = String(gatewaySessionIdInput?.value || "").trim();
-  payload.gateway_session_id = gsidVal;
   payload.warm_enabled = warmEnabledInput ? !!warmEnabledInput.checked : false;
   await saveLoopConfig(payload, hint);
 });

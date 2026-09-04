@@ -83,15 +83,6 @@ MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2000"))
 TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.7"))
 STREAM_OUTPUT = os.environ.get("LOOP_STREAM", "1").lower() not in {"0", "false", "no"}
 FALLBACK_CODES = {401, 403, 404, 408, 409, 429, 500, 502, 503, 504}
-FORCE_NATIVE_TOOLS = os.environ.get("FORCE_NATIVE_TOOLS", "0").lower() in {"1", "true", "yes"}
-# 逗号分隔的模型名列表:这些模型强制走提示词工具模式(<tool_call> 文本协议),
-# 适用于不支持原生 tools 参数的中转端,免去每次先失败一次才自动切换。
-PROMPT_TOOLS_FORCE = {m.strip() for m in os.environ.get("LLM_PROMPT_TOOLS", "").split(",") if m.strip()}
-
-_TOOLS_UNSUPPORTED_ROUTES: set[tuple[str, str]] = set()
-_THINKING_TOOLS_CONFLICT: set[tuple[str, str]] = set()
-_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-_TOOL_TAG_RE = re.compile(r"<tool_call\b.*?</tool_call>", re.DOTALL)
 
 if not PERSONA and PERSONA_FILE:
     try:
@@ -607,7 +598,6 @@ def public_config() -> dict[str, Any]:
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
-        "gateway_session_id": gateway_session_id(),
         "warm_enabled": bool(warm_cfg().get("enabled", False)),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "proactive": proactive_public(),
@@ -666,8 +656,6 @@ def update_config(body: dict[str, Any]) -> dict[str, Any]:
             cfg["thinking_budget"] = max(0, min(32768, int(body["thinking_budget"])))
         except Exception:
             pass
-    if "gateway_session_id" in body:
-        cfg["gateway_session_id"] = str(body.get("gateway_session_id") or "").strip()
     if "warm_enabled" in body:
         wl = cfg.get("warm_layer")
         wl = dict(wl) if isinstance(wl, dict) else {}
@@ -1004,11 +992,17 @@ class _DeltaEmitter:
                 pass
 
 
-async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sink, think_sink=None) -> dict[str, Any]:
+async def chat_once(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, *, on_thinking=None, sink=None) -> dict[str, Any]:
+    """一次 chat/completions 调用(流式消费,只攒正文/思考/工具调用)。
+
+    sink(chunk) 可选:拿到正文增量就回调(用于 reply_delta 流式草稿)。
+    返回 {"text", "message", "usage", "thinking", "tool_calls"} —— message
+    可直接回填进 messages 供工具续轮;自定义 headers 原样带在请求上。
+    """
     body = {
         "model": route["model"],
         "messages": messages,
-        "temperature": _route_temperature(route),
+        "temperature": temperature(),
         "stream": True,
         # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
         "stream_options": {"include_usage": True},
@@ -1022,15 +1016,23 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
     budget = thinking_budget()
     if budget > 0:
         body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    text_parts: list[str] = []
-    usage: dict[str, Any] = {}
-    thinking_parts: list[str] = []
-    tool_calls_buf: list[dict[str, Any]] = []
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
     req_headers = {"Authorization": f"Bearer {route['key']}", "Content-Type": "application/json"}
     for hk, hv in (route.get("headers") or {}).items():
         if str(hk) and str(hv):
             req_headers[str(hk)] = str(hv)
-    async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
+
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls_buf: list[dict[str, Any]] = []
+    usage: dict[str, Any] = {}
+    raw_msg: dict[str, Any] = {}
+
+    # OB 网关在工具续轮/召回阶段可能长时间不出字节,read 放宽到 600s,只保 connect 的 30s。
+    client_timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
+    async with httpx.AsyncClient(timeout=client_timeout, trust_env=False) as client:
         async with client.stream(
             "POST",
             route["url"].rstrip("/") + "/chat/completions",
@@ -1041,8 +1043,7 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
                 err_detail = ""
                 try:
                     lines = [line async for line in resp.aiter_lines()]
-                    body_text = "\n".join(lines)[:500]
-                    err_detail = body_text or str(resp.status_code)
+                    err_detail = "\n".join(lines)[:500] or str(resp.status_code)
                 except Exception:
                     err_detail = str(resp.status_code)
                 raise HTTPException(status_code=max(resp.status_code, 400), detail=err_detail)
@@ -1050,35 +1051,49 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
                 line = line.strip()
                 if not line.startswith("data:"):
                     continue
-                data = line[5:].strip()
-                if data == "[DONE]":
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
                     break
                 try:
-                    ev = json.loads(data)
+                    ev = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
                 n = normalize_stream_event(ev)
                 if n["usage"]:
                     usage = n["usage"]
+                if n["role"]:
+                    raw_msg["role"] = n["role"]
                 if n["content"]:
                     text_parts.append(n["content"])
-                    await sink(n["content"])
+                    if sink:
+                        try:
+                            await sink(n["content"])
+                        except Exception:
+                            pass
                 if n["thinking"]:
                     thinking_parts.append(n["thinking"])
-                    if think_sink:
+                    if on_thinking:
                         try:
-                            await think_sink(n["thinking"])
+                            await on_thinking(n["thinking"])
                         except Exception:
                             pass
                 if n["tool_calls"]:
                     accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
-    final_tool_calls, _ = finalize_tool_calls(tool_calls_buf)
+
+    merged_thinking = merge_thinking(thinking_parts)
+    tool_calls_parsed, raw_tool_calls = finalize_tool_calls(tool_calls_buf)
     final_text = "".join(text_parts).strip()
+    if "role" not in raw_msg:
+        raw_msg["role"] = "assistant"
+    raw_msg["content"] = final_text
+    if raw_tool_calls:
+        raw_msg["tool_calls"] = raw_tool_calls
     return {
         "text": final_text,
+        "message": raw_msg,
         "usage": usage,
-        "thinking": merge_thinking(thinking_parts),
-        "tool_calls": final_tool_calls if final_tool_calls else None
+        "thinking": merged_thinking if merged_thinking else None,
+        "tool_calls": tool_calls_parsed if tool_calls_parsed else None,
     }
 
 
@@ -1309,134 +1324,6 @@ async def warm_injection(session_id: str, *, is_new: bool) -> str:
         return text
 
 
-async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, *, disable_thinking: bool = False, on_thinking=None) -> dict[str, Any]:
-    body = {
-        "model": route["model"],
-        "messages": messages,
-        "temperature": _route_temperature(route),
-        "stream": True,
-        # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
-        "stream_options": {"include_usage": True},
-    }
-    mt = max_tokens()
-    if mt is not None:
-        body["max_tokens"] = mt
-    tp = top_p()
-    if tp is not None:
-        body["top_p"] = tp
-    budget = thinking_budget()
-    if budget > 0 and not disable_thinking:
-        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-    if tools:
-        body["tools"] = tools
-        body["tool_choice"] = "auto"
-    req_headers = {"Authorization": f"Bearer {route['key']}", "Content-Type": "application/json"}
-    for hk, hv in (route.get("headers") or {}).items():
-        if str(hk) and str(hv):
-            req_headers[str(hk)] = str(hv)
-
-    text_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls_buf: list[dict[str, Any]] = []
-    usage: dict[str, Any] = {}
-    raw_msg: dict[str, Any] = {}
-    raw_samples: list[str] = []
-
-    body_keys = [k for k in body if k not in ("messages",)]
-    body_summary = {k: (body[k] if k != "tools" else f"[{len(body[k])} tools]") for k in body_keys}
-    sys_content = ""
-    for m in messages:
-        if isinstance(m, dict) and m.get("role") == "system":
-            sys_content = str(m.get("content") or "")
-            break
-    sid = str(req_headers.get("X-Ombre-Session-Id") or "")
-    print(f"[api_loop:complete_chat] request body keys: {body_summary} | sys_len={len(sys_content)} warm={'Y' if '苏醒垫层' in sys_content else 'N'}" + (f" | sid={sid}" if sid else " | sid=-"))
-
-    finish_reason_val = None
-    # OB 网关在 tool 续轮 / 召回阶段可能长时间不出字节(几十秒到几分钟都有),
-    # read 只有 120s 时会误杀"还在正常工作"的流,导致 PWA 直接看到
-    # "API 调用失败:ReadTimeout"。read 放宽到 600s,只保 connect 的 30s。
-    client_timeout = httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0)
-    try:
-        async with httpx.AsyncClient(timeout=client_timeout, trust_env=False) as client:
-            async with client.stream(
-                "POST",
-                route["url"].rstrip("/") + "/chat/completions",
-                headers=req_headers,
-                json=body,
-            ) as resp:
-                if resp.status_code >= 400:
-                    err_detail = ""
-                    try:
-                        lines = [line async for line in resp.aiter_lines()]
-                        body_text = "\n".join(lines)[:500]
-                        err_detail = body_text or str(resp.status_code)
-                    except Exception:
-                        err_detail = str(resp.status_code)
-                    raise HTTPException(status_code=max(resp.status_code, 400), detail=err_detail)
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data_str = line[5:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        ev = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    if tools and len(raw_samples) < 3:
-                        raw_samples.append(data_str[:200])
-                    n = normalize_stream_event(ev)
-                    if n["usage"]:
-                        usage = n["usage"]
-                    if n["finish_reason"]:
-                        finish_reason_val = n["finish_reason"]
-                    if n["role"]:
-                        raw_msg["role"] = n["role"]
-                    if n["content"]:
-                        text_parts.append(n["content"])
-                    if n["thinking"]:
-                        thinking_parts.append(n["thinking"])
-                        if on_thinking:
-                            try:
-                                await on_thinking(n["thinking"])
-                            except Exception:
-                                pass
-                    if n["tool_calls"]:
-                        accumulate_tool_calls(tool_calls_buf, n["tool_calls"])
-    except httpx.ReadTimeout:
-        # 600s 仍被掐断:若已经拿到正文或工具调用,先交回部分结果(能救一轮是一轮);
-        # 什么都没拿到才抛出去,让 run_model 切换下一个路由。
-        if text_parts or tool_calls_buf:
-            print(f"[api_loop:complete_chat] stream read timeout, salvaging partial: text_chars={sum(len(t) for t in text_parts)}, thinking_chars={sum(len(t) for t in thinking_parts)}, tool_calls={len(tool_calls_buf)}, finish={finish_reason_val}")
-            finish_reason_val = finish_reason_val or "length"
-        else:
-            raise
-
-    merged_thinking = merge_thinking(thinking_parts)
-
-    tool_calls_parsed, raw_tool_calls = finalize_tool_calls(tool_calls_buf)
-
-    if tools and not tool_calls_buf:
-        print(f"[api_loop:complete_chat] tools passed but no tool calls parsed, raw_stream_samples={raw_samples}")
-
-    final_text = "".join(text_parts).strip()
-    if "role" not in raw_msg:
-        raw_msg["role"] = "assistant"
-    raw_msg["content"] = final_text
-    if raw_tool_calls:
-        raw_msg["tool_calls"] = raw_tool_calls
-    print(f"[api_loop:complete_chat] has_reasoning_content={bool(thinking_parts)}, has_tool_calls={bool(tool_calls_parsed)}, text_len={len(final_text)}, finish_reason={finish_reason_val}")
-    return {
-        "text": final_text,
-        "message": raw_msg,
-        "usage": usage,
-        "thinking": merged_thinking if merged_thinking else None,
-        "tool_calls": tool_calls_parsed if tool_calls_parsed else None
-    }
-
-
 async def execute_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     for server in mcp_servers():
         prefix = f"mcp_{server['name']}_"
@@ -1507,383 +1394,34 @@ def mcp_result_text(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-# ── 提示词工具模式(<tool_call> 文本协议) ────────────────────────────────────
-def _prompt_tools_block(tools: list[dict[str, Any]]) -> str:
-    lines = [
-        "TOOL CALLING PROTOCOL (strict):",
-        "",
-        "You have tools available. When you decide to use one, your ENTIRE reply must be",
-        "one single-line <tool_call> block and nothing else. Exact format:",
-        "",
-        "<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}</tool_call>",
-        "",
-        "Rules:",
-        "- The block must be valid JSON containing a \"name\" string and an \"arguments\" object.",
-        "- Do NOT wrap it in markdown code fences; do NOT add any text before or after the block.",
-        "- Do NOT emit <tool_call> when you do not need a tool; just answer the user normally.",
-        "- After you receive the tool result, continue and answer the user normally.",
-        "",
-        "Available tools:",
-    ]
-    for t in tools:
-        fn = t.get("function") or t
-        name = fn.get("name", "")
-        desc = fn.get("description", "")
-        params = fn.get("parameters") or {}
-        props = params.get("properties") or {}
-        req = params.get("required") or []
-        param_parts = []
-        for pname, pschema in props.items():
-            ptype = pschema.get("type", "any")
-            pdesc = pschema.get("description", "")
-            marker = " (required)" if pname in req else ""
-            param_parts.append(f"    - {pname}: {ptype}{marker}" + (f" — {pdesc}" if pdesc else ""))
-        lines.append(f"\n### {name}")
-        if desc:
-            lines.append(desc)
-        if param_parts:
-            lines.append("  Parameters:")
-            lines.extend(param_parts)
-    return "\n".join(lines)
-
-
-def _extract_balanced_json(text: str, start: int) -> str | None:
-    """从 start 位置提取第一个花括号平衡的 JSON 片段(字符串感知,兼容嵌套)。"""
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-def _extract_tool_calls(text: str) -> list[dict[str, Any]]:
-    """从模型输出中提取所有 <tool_call> JSON 调用,兼容嵌套参数与多标签。"""
-    calls: list[dict[str, Any]] = []
-    pos = 0
-    while True:
-        idx = text.find("<tool_call", pos)
-        if idx < 0:
-            break
-        pos = idx + len("<tool_call")
-        brace = text.find("{", idx)
-        if brace < 0:
-            continue
-        end_tag = text.find("</tool_call>", idx)
-        if end_tag != -1 and brace > end_tag:
-            continue  # 标签不完整,忽略
-        payload = _extract_balanced_json(text, brace)
-        if payload is None:
-            continue
-        try:
-            call = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(call, dict) and str(call.get("name") or "").strip():
-            calls.append(call)
-    return calls
-
-
-async def _prompt_tool_loop(route: dict[str, Any], messages: list[dict[str, Any]], tools: list[dict[str, Any]], max_rounds: int = 8, on_thinking=None) -> dict[str, Any]:
-    system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
-    if system_msg:
-        system_msg["content"] = system_msg["content"].rstrip() + "\n\n" + _prompt_tools_block(tools)
-    else:
-        messages.insert(0, {"role": "system", "content": _prompt_tools_block(tools)})
-    last_out: dict[str, Any] = {"text": "", "usage": {}}
-    tool_calls_collected: list[dict[str, Any]] = []
-    nudged = False
-    for _ in range(max_rounds):
-        out = await complete_chat(route, messages, on_thinking=on_thinking)
-        last_out = out
-        text = out.get("text") or ""
-        calls = _extract_tool_calls(text)
-        if not calls:
-            # 只有在模型回复极短(疑似偷懒/漏用工具)时才补一次强制提示。
-            # 正常长度的直接回答就是最终答案——曾经这里无条件 nudge,把模型
-            # 已经写好的完整回复扔了再重roll一轮 32k 思考,既慢又丢内容。
-            if not nudged and not tool_calls_collected and len(text.strip()) < 40:
-                nudged = True
-                print(f"[api_loop:_prompt_tool_loop] no <tool_call> in model output, nudging once, text_preview={text[:150]!r}")
-                messages.append({"role": "assistant", "content": text})
-                messages.append({"role": "user", "content":
-                    "You did not emit a <tool_call> block. If you need information from a tool, "
-                    "reply with ONLY a valid <tool_call>{...}</tool_call> block and nothing else. "
-                    "If you really do not need any tool, just answer the user directly."})
-                continue
-            # 已执行过工具后的最终回答,或 nudge 后仍无效 → 收尾
-            if not tool_calls_collected:
-                print(f"[api_loop:_prompt_tool_loop] still no <tool_call> after nudge, giving up, text_preview={text[:150]!r}")
-            break
-        result_msgs: list[dict[str, Any]] = []
-        for call in calls:
-            tool_name = str(call.get("name") or "")
-            tool_args = call.get("arguments") or {}
-            if not isinstance(tool_args, dict):
-                tool_args = {}
-            try:
-                result = await execute_mcp_tool(tool_name, tool_args)
-                result_str = json.dumps(result, ensure_ascii=False)
-                tool_calls_collected.append(_tool_call_entry(tool_name, tool_args, mcp_result_text(result)))
-            except Exception as exc:
-                result_str = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                tool_calls_collected.append(_tool_call_entry(tool_name, tool_args, {"error": str(exc)}, status="error"))
-            result_msgs.append({"role": "user", "content": f"<tool_result name=\"{tool_name}\">{result_str}</tool_result>"})
-        messages.append({"role": "assistant", "content": text})
-        messages.extend(result_msgs)
-    final_text = (last_out.get("text") or "")
-    cleaned = _TOOL_TAG_RE.sub("", final_text).strip()
-    if cleaned != final_text:
-        last_out["text"] = cleaned
-    if tool_calls_collected:
-        last_out["tool_calls"] = tool_calls_collected
-    return last_out
-
-
-# ── Claude 思考风格注入 ────────────────────────────────────────────────────
-# Claude 的裸思考默认是第三人称分析腔(The user/The assistant …),很"硬"。
-# 这里在请求层给 Claude 路由的 system 提示追加一段思考风格指令,让 thinking
-# 变成第一人称中文碎碎念。不写入人设、不落库,只在发请求时注入,幂等。
-_THINKING_STYLE_ZH = (
-    "【思考风格】你 thinking 阶段的内心活动请用第一人称中文碎碎念,像真实内心独白,"
-    "不要第三人称分析报告。用「唔、嗯、诶、等等、不对不对」这类语气词开头,想到哪说到哪;"
-    "允许自我怀疑、推翻自己、带点小情绪小吐槽;指代用户和自己时用「他」「咱们」,"
-    "禁止用 The user / The assistant 这类客观指代;句子不用完整标点,自然、可爱,和聊天人设一致。"
-)
-_THINKING_STYLE_MARK = "【思考风格】"
-
-def _route_is_claude(route: dict[str, Any]) -> bool:
-    probe = f"{route.get('model', '')} {route.get('url', '')}".lower()
-    return ("claude" in probe) or ("anthropic" in probe)
-
-def _route_temperature(route: dict[str, Any]) -> float:
-    """按路由钳制温度。Anthropic/Claude 只接受 [0,1];开启 extended thinking
-    时必须为 1,否则中转端会静默丢弃 thinking(思考链整段消失)。
-    配置里残留的 2.0 之类在这里被钳住,不用改服务端配置。"""
-    t = temperature()
-    if not _route_is_claude(route):
-        return t
-    if thinking_budget() > 0:
-        return 1.0
-    return max(0.0, min(1.0, t))
-
-def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """对 Claude 路由注入思考风格(幂等:system 已带标记则跳过)。"""
-    if not _route_is_claude(route):
-        return messages
-    for m in messages:
-        if m.get("role") == "system":
-            content = str(m.get("content") or "")
-            if _THINKING_STYLE_MARK not in content:
-                m["content"] = f"{content}\n{_THINKING_STYLE_ZH}".strip()
-            return messages
-    messages.insert(0, {"role": "system", "content": _THINKING_STYLE_ZH})
-    return messages
-
-
-def gateway_session_id() -> str:
-    """Ombre 网关路由的会话 id(X-Ombre-Session-Id 的值)。
-
-    OB 的 persona 状态、reminder、语义去重、reasoning 缓存全以它为键。
-    每个 relay 窗口都换新 id,OB 就为每个窗口新建一个 persona session ——
-    仪表盘出现 API-xxx 开头的人格,MAIN 里累存的温度(residue/mood/affect)
-    带不过去,说话就变回出厂硬度。所以默认恒为 "main",人格连续;
-    窗口级苏醒靠本 loop 自己每次垫 handoff/feel/whisper,不靠换 id。
-    gateway_session_id 设成 "auto" 才按 relay 窗口隔离;空串 "" = 不发此头。"""
-    try:
-        cfg = load_config()
-        raw = str(cfg.get("gateway_session_id") or "").strip()
-        if raw:
-            return raw
-        if cfg.get("gateway_session_header") is False:
-            return ""
-    except Exception:
-        pass
-    return "main"
-
-
-def _route_with_session_header(route: dict[str, Any], session_id: str) -> dict[str, Any]:
-    """仅对 Ombre 网关路由(URL 含 "ombre")附加 X-Ombre-Session-Id。
-    取值策略见 gateway_session_id():默认恒 "main",人格连续;"auto" 才按窗口隔离。"""
-    sid = gateway_session_id()
-    if sid == "auto":
-        sid = str(session_id or "")
-    if not sid:
-        return route
-    if "ombre" not in str(route.get("url") or "").lower():
-        return route
-    headers = dict(route.get("headers") or {})
-    if headers.get("X-Ombre-Session-Id") == sid:
-        return route
-    out = dict(route)
-    out["headers"] = {**headers, "X-Ombre-Session-Id": sid}
-    return out
-
-
 # ── 模型调用主入口:多模型 fallback ─────────────────────────────────────────
 async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False, on_thinking=None) -> dict[str, Any]:
+    """模型调用主入口:main_chain 顺次尝试,原生 tools + MCP 单路径。
+
+    无工具 → 一次流式调用,正文增量经 sink 打 reply_delta 草稿;
+    有工具 → 原生 tools 参数 + 8 轮上限工具循环,拿到最终正文为止。
+    """
     tried = []
     last_error = ""
+    all_tools = await mcp_tools()
     for route in main_chain():
         tried.append(route.get("model"))
         try:
-            all_tools = await mcp_tools()
-            route_key = (route.get("url", "").rstrip("/"), route.get("model", ""))
-            route = _route_with_session_header(route, session_id)
-            if bool(all_tools) and route.get("model") in PROMPT_TOOLS_FORCE:
-                use_prompt_tools = True      # 显式强制:该模型走提示词工具协议
-            elif FORCE_NATIVE_TOOLS:
-                use_prompt_tools = False     # 显式强制:一律走原生 tools 参数
-            else:
-                use_prompt_tools = route_key in _TOOLS_UNSUPPORTED_ROUTES and bool(all_tools)
-            native_tools = [] if use_prompt_tools else all_tools
-            suppress_thinking = (route_key in _THINKING_TOOLS_CONFLICT and bool(native_tools) and thinking_budget() > 0)
-            tool_names = [t.get("function", {}).get("name", "") for t in native_tools] if native_tools else []
-            print(f"[api_loop:run_model] mcp_tools={len(all_tools)}, native_tools={len(native_tools)}, prompt_tools={use_prompt_tools}, suppress_thinking={suppress_thinking}, tool_names={tool_names[:5]}")
-            if use_prompt_tools:
-                out = await _prompt_tool_loop(route, _msgs_for_route(route, messages), all_tools, on_thinking=on_thinking)
-            elif emit_stream and STREAM_OUTPUT and not native_tools:
-                try:
-                    async def sink(chunk: str) -> None:
-                        await relay_out({
-                            "type": "reply_delta",
-                            "stream_id": stream_id,
-                            "text": chunk,
-                            "done": False,
-                            "api_session": session_id,
-                        })
-                    out = await stream_chat(route, _msgs_for_route(route, messages), sink, think_sink=on_thinking)
-                except HTTPException as exc:
-                    if exc.status_code not in FALLBACK_CODES:
-                        raise
-                    out = await complete_chat(route, _msgs_for_route(route, messages), native_tools, on_thinking=on_thinking)
-            else:
-                messages = _msgs_for_route(route, messages)
-                base_messages = messages[:]
-                tool_calls_collected: list[dict[str, Any]] = []
-                first_thinking = None
-                suppress = suppress_thinking
-                try:
-                    for round_idx in range(8):
-                        out = await complete_chat(route, messages, native_tools, disable_thinking=suppress, on_thinking=on_thinking)
-                        if round_idx == 0 and out.get("thinking"):
-                            first_thinking = out["thinking"]
-                        msg = out.get("message") or {}
-                        calls = msg.get("tool_calls") or []
-                        if not calls and isinstance(msg.get("function_call"), dict):
-                            calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
-                        # 原生工具静默失效探测:传了工具的模型既没思考也没调用工具。
-                        # 1) 思考模式与工具冲突时,中转端会静默丢弃 tools(不报 400,直接回正文)
-                        #    → 标记冲突并改用「关闭思考」重试;
-                        # 2) 关闭思考后仍无工具调用 → 该中转端不认原生 tools
-                        #    → 标记为不支持并改走提示词工具模式(<tool_call> 文本协议)。
-                        if (
-                            round_idx == 0
-                            and not calls
-                            and not out.get("thinking")
-                            and native_tools
-                        ):
-                            if thinking_budget() > 0 and not suppress:
-                                print(f"[api_loop:run_model] silent thinking+tools conflict, retrying without thinking: {route_key}")
-                                _THINKING_TOOLS_CONFLICT.add(route_key)
-                                suppress = True
-                                messages = base_messages[:]
-                                out = await complete_chat(route, messages, native_tools, disable_thinking=True)
-                                msg = out.get("message") or {}
-                                calls = msg.get("tool_calls") or []
-                                if not calls and isinstance(msg.get("function_call"), dict):
-                                    calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
-                            if not calls:
-                                print(f"[api_loop:run_model] native tools silently dropped by relay, switching to prompt tools: {route_key}")
-                                _TOOLS_UNSUPPORTED_ROUTES.add(route_key)
-                                try:
-                                    out = await _prompt_tool_loop(route, base_messages, all_tools, on_thinking=on_thinking)
-                                except Exception:
-                                    out = await complete_chat(route, base_messages, on_thinking=on_thinking)
-                        if not calls:
-                            break
-                        messages.append(msg)
-                        for call in calls:
-                            fn = call.get("function") or {}
-                            tool_name = str(fn.get("name") or "")
-                            try:
-                                args = json.loads(fn.get("arguments") or "{}")
-                                result = await execute_mcp_tool(tool_name, args)
-                                content = json.dumps(result, ensure_ascii=False)
-                                tool_calls_collected.append(_tool_call_entry(tool_name, args, mcp_result_text(result)))
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                                tool_calls_collected.append(_tool_call_entry(tool_name, args, {"error": str(exc)}, status="error"))
-                            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
-                    else:
-                        out = {"text": "", "usage": {}}
-                    if tool_calls_collected:
-                        out["tool_calls"] = tool_calls_collected
-                    if first_thinking and not out.get("thinking"):
-                        out["thinking"] = first_thinking
-                except HTTPException as exc:
-                    print(f"[api_loop:run_model] tool-loop exception: HTTP {exc.status_code}, native_tools={len(native_tools)}, suppress_thinking={suppress_thinking}, detail={str(exc.detail)[:200]}")
-                    if exc.status_code == 400 and native_tools and not FORCE_NATIVE_TOOLS:
-                        if thinking_budget() > 0 and not suppress_thinking:
-                            print(f"[api_loop:run_model] thinking+tools conflict detected, retrying without thinking: {route_key}")
-                            _THINKING_TOOLS_CONFLICT.add(route_key)
-                            try:
-                                messages = base_messages[:]
-                                tool_calls_collected = []
-                                for round_idx in range(8):
-                                    out = await complete_chat(route, messages, native_tools, disable_thinking=True)
-                                    msg = out.get("message") or {}
-                                    calls = msg.get("tool_calls") or []
-                                    if not calls and isinstance(msg.get("function_call"), dict):
-                                        calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
-                                    if not calls:
-                                        break
-                                    messages.append(msg)
-                                    for call in calls:
-                                        fn = call.get("function") or {}
-                                        tool_name = str(fn.get("name") or "")
-                                        try:
-                                            args = json.loads(fn.get("arguments") or "{}")
-                                            result = await execute_mcp_tool(tool_name, args)
-                                            content_str = json.dumps(result, ensure_ascii=False)
-                                            tool_calls_collected.append(_tool_call_entry(tool_name, args, mcp_result_text(result)))
-                                        except Exception as e2:
-                                            content_str = json.dumps({"error": str(e2)}, ensure_ascii=False)
-                                            tool_calls_collected.append(_tool_call_entry(tool_name, args, {"error": str(e2)}, status="error"))
-                                        messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content_str})
-                                else:
-                                    out = {"text": "", "usage": {}}
-                                if tool_calls_collected:
-                                    out["tool_calls"] = tool_calls_collected
-                            except Exception:
-                                out = await complete_chat(route, base_messages, on_thinking=on_thinking)
-                        else:
-                            print(f"[api_loop:run_model] marking route as tools-unsupported: {route_key}")
-                            _TOOLS_UNSUPPORTED_ROUTES.add(route_key)
-                            try:
-                                out = await _prompt_tool_loop(route, base_messages, all_tools, on_thinking=on_thinking)
-                            except Exception:
-                                out = await complete_chat(route, base_messages, on_thinking=on_thinking)
-                    elif not native_tools or exc.status_code not in {404, 405, 422}:
-                        raise
-                    else:
-                        out = await complete_chat(route, base_messages, on_thinking=on_thinking)
+            if all_tools:
+                return await _tool_loop(route, messages, all_tools, on_thinking=on_thinking, tried=tried)
+            sink = None
+            if emit_stream and STREAM_OUTPUT:
+
+                async def sink(chunk: str) -> None:
+                    await relay_out({
+                        "type": "reply_delta",
+                        "stream_id": stream_id,
+                        "text": chunk,
+                        "done": False,
+                        "api_session": session_id,
+                    })
+
+            out = await chat_once(route, messages, on_thinking=on_thinking, sink=sink)
             out["model"] = route.get("model")
             out["tried"] = tried[:-1]
             return out
@@ -1896,6 +1434,44 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
     if last_error:
         print(f"[api_loop:run_model] all routes failed: last_error={last_error!r}, tried={tried!r}")
     return {"text": "", "error": last_error or "all models failed", "tried": tried}
+
+
+async def _tool_loop(route: dict[str, Any], messages: list[dict[str, Any]], all_tools: list[dict[str, Any]], *, on_thinking=None, tried: list[str]) -> dict[str, Any]:
+    """原生工具循环:模型出 tool_calls → 执行 MCP 工具 → 结果喂回,最多 8 轮。"""
+    msgs = messages[:]
+    first_thinking = None
+    collected: list[dict[str, Any]] = []
+    out: dict[str, Any] = {"text": "", "usage": {}}
+    for round_idx in range(8):
+        out = await chat_once(route, msgs, tools=all_tools, on_thinking=on_thinking)
+        if round_idx == 0 and out.get("thinking"):
+            first_thinking = out["thinking"]
+        msg = out.get("message") or {}
+        calls = msg.get("tool_calls") or []
+        if not calls and isinstance(msg.get("function_call"), dict):
+            calls = [{"id": "call_legacy", "type": "function", "function": msg["function_call"]}]
+        if not calls:
+            break
+        msgs.append(msg)
+        for call in calls:
+            fn = call.get("function") or {}
+            tool_name = str(fn.get("name") or "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                result = await execute_mcp_tool(tool_name, args)
+                content = json.dumps(result, ensure_ascii=False)
+                collected.append(_tool_call_entry(tool_name, args, mcp_result_text(result)))
+            except Exception as exc:
+                content = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                collected.append(_tool_call_entry(tool_name, args, {"error": str(exc)}, status="error"))
+            msgs.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
+    if collected:
+        out["tool_calls"] = collected
+    if first_thinking and not out.get("thinking"):
+        out["thinking"] = first_thinking
+    out["model"] = route.get("model")
+    out["tried"] = tried[:-1]
+    return out
 
 
 # ── 主动消息(proactive) · 调度循环 ─────────────────────────────────────────
@@ -2095,20 +1671,8 @@ async def healthz():
         "history_n": history_n(),
         "relay_db": RELAY_DB,
         "relay_secret_loaded": bool(RELAY_SECRET),
-        "unsupported_routes": len(_TOOLS_UNSUPPORTED_ROUTES),
-        "force_native_tools": FORCE_NATIVE_TOOLS,
         "proactive_enabled": bool(proactive_cfg().get("enabled")),
     }
-
-
-@app.post("/loop/clear-unsupported")
-async def clear_unsupported():
-    count_tools = len(_TOOLS_UNSUPPORTED_ROUTES)
-    count_thinking = len(_THINKING_TOOLS_CONFLICT)
-    _TOOLS_UNSUPPORTED_ROUTES.clear()
-    _THINKING_TOOLS_CONFLICT.clear()
-    return {"ok": True, "cleared_tools": count_tools, "cleared_thinking": count_thinking}
-
 
 
 @app.get("/loop/config")
