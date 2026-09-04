@@ -222,11 +222,11 @@
   .topbar > *{ pointer-events: auto; }
   .peerpill{
     position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-    display:flex; flex-direction:column; align-items:center; line-height:1.15;
+    display:flex; flex-direction:column; align-items:center; line-height:1.35;
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 0;
+    padding: 2px 0;
     max-width: min(680px, calc(100% - 170px));
     text-align:center;
   }
@@ -237,7 +237,10 @@
     color: var(--text);
     letter-spacing: 0;
     text-shadow: 0 1px 18px rgba(255,255,255,0.3);
-    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    /* iOS 上 flex item 会被 block 化,overflow:hidden + 1.15 行高会把宋体字上半裁掉;
+       改为不裁字 + 宽松行高,超长名交给 peerpill 的 max-width 兜底 */
+    line-height: 1.35;
+    max-width:100%; white-space:nowrap; overflow:visible;
   }
   .peerpill .status{
     font-family: var(--font-en), var(--font-cn);
@@ -245,7 +248,8 @@
     color: var(--text-soft);
     margin-top: 4px;
     letter-spacing: 0;
-    max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    line-height: 1.3;
+    max-width:100%; white-space:nowrap; overflow:visible;
   }
   .app[data-conn="reconnecting"] .peerpill .status{ color:#9a8061; }
   .peerpill .status.typing{
@@ -1404,7 +1408,7 @@
   @media (max-width: 520px){
     :root{
       --side-pad: 16px;
-      --header-h: 60px;
+      --header-h: 68px;   /* 名字/状态行高加大后留足上下空间,避免贴状态栏 */
       --avatar-size: 32px;
       --edge-fade-top: 10px;   /* 顶部渐隐收窄:避免首条消息变半透明残影、显得头部被挤压 */
     }
