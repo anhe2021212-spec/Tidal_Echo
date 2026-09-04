@@ -554,7 +554,12 @@ async def attachment_parts(atts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def build_messages(text: str, *, before_id: int | None = None, session_id: str = "", use_context: bool = True, image_parts: list[dict[str, Any]] | None = None, warm_block: str = "") -> list[dict[str, Any]]:
     tool_hint = " When a configured MCP tool can provide current, external, or actionable information, use it before answering."
-    system_text = persona() + tool_hint
+    memory_fallback = (
+        "\n\n如果当前上下文中没有任何记忆内容，你必须在回复前先调用 breath 工具"
+        "（用用户的话做 query）检索相关记忆。绝对不要在没有记忆支撑的情况下凭空编造"
+        "过去的事件、对话或细节。如果检索后仍然没有相关记忆，诚实告诉用户你想不起来。"
+    )
+    system_text = persona() + tool_hint + memory_fallback
     inj_on, inj_rows = injections()
     if inj_on and inj_rows:
         blocks: list[str] = []
@@ -1192,13 +1197,13 @@ def warm_cfg() -> dict[str, Any]:
         cfg = {}
     try:
         return {
-            "enabled": bool(cfg.get("enabled", False)),
+            "enabled": bool(cfg.get("enabled", True)),
             "idle_minutes": max(1, int(cfg.get("idle_minutes", 15))),
             "max_tokens": max(200, int(cfg.get("max_tokens", 2000))),
             "cache_minutes": max(10, int(cfg.get("cache_minutes", 30))),
         }
     except Exception:
-        return {"enabled": False, "idle_minutes": 15, "max_tokens": 2000, "cache_minutes": 30}
+        return {"enabled": True, "idle_minutes": 15, "max_tokens": 2000, "cache_minutes": 30}
 
 
 async def _brain_server() -> dict[str, Any] | None:
@@ -2001,6 +2006,22 @@ async def handle_ingest(text: str, msg_id: int | None, session_id: str, *, dry: 
     warm_block = ""
     if wake:
         warm_block = await warm_injection(session_id, is_new=is_new_session)
+    per_turn_block = ""
+    if not dry:
+        try:
+            brain_srv = await _brain_server()
+            if brain_srv:
+                recall_text = await _breath_text(brain_srv, query=text, max_tokens=2000, max_results=8)
+                if recall_text.strip():
+                    per_turn_block = (
+                        "\n\n当前话题相关记忆（记忆系统根据用户这句话自动检索的结果。"
+                        "读进心里自然使用，不要复述出处）:\n\n"
+                        + recall_text.strip()
+                    )
+                    print(f"[api_loop:per_turn_recall] injected {len(per_turn_block)} chars for session={session_id}")
+        except Exception as exc:
+            print(f"[api_loop:per_turn_recall] failed: {type(exc).__name__}: {exc}")
+    warm_block = warm_block + per_turn_block
     messages = build_messages(text, before_id=msg_id, session_id=session_id, use_context=True, image_parts=image_parts or None, warm_block=warm_block)
     thinking_stream: _DeltaEmitter | None = None
     if (not dry) and STREAM_OUTPUT:
