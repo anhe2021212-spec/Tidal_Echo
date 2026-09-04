@@ -5879,10 +5879,13 @@ function fillMeta(metaEl, ts, isAn, usage){
   let html = `<span>${fmtTime(ts)}</span>`;
   if (isAn) html += `<span class="tick">✓✓</span>`;
   if (!isAn && usage) {
-    const out = Number(usage.output_tokens || 0);
-    const inp = Number(usage.input_tokens || 0);
+    // 兼容两种命名:归一化后的 input/output_tokens,以及老消息里透传的 prompt/completion_tokens
+    const out = Number(usage.output_tokens || usage.completion_tokens || 0);
+    const inp = Number(usage.input_tokens || usage.prompt_tokens || 0);
+    const total = Number(usage.total_tokens || 0);
     if (out > 0) html += `<span class="tok">${out.toLocaleString()} tok</span>`;
     else if (inp > 0) html += `<span class="tok">${inp.toLocaleString()} in</span>`;
+    else if (total > 0) html += `<span class="tok">${total.toLocaleString()} tok</span>`;
   }
   metaEl.innerHTML = html;
 }

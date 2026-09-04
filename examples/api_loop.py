@@ -787,6 +787,35 @@ async def relay_out(payload: dict[str, Any]) -> tuple[bool, Any]:
 # 目标：PWA/relay 只认一套固定格式，任何一家 LLM API 的字段差异都在这里被
 # “翻译”成统一字段。以后接入新 API，只需要在下面两处补对应字段名，PWA 不用改。
 
+def normalize_usage(raw: Any) -> dict[str, Any]:
+    """把各家 usage 字段名统一成 {input_tokens, output_tokens, total_tokens}。
+
+    坑：OpenAI/DeepSeek/GLM/Qwen 系返回 prompt_tokens/completion_tokens，
+    Anthropic/Gemini 兼容端点返回 input_tokens/output_tokens——之前此处“透传”，
+    PWA 只认后者，于是 OpenAI 系路由的 tok 数全变成 0、前端一个都不显示。
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    def num(*keys: str) -> int | None:
+        for k in keys:
+            v = raw.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return int(v)
+        return None
+
+    norm: dict[str, Any] = {}
+    inp = num("input_tokens", "prompt_tokens")
+    outp = num("output_tokens", "completion_tokens")
+    total = num("total_tokens")
+    if inp is not None:
+        norm["input_tokens"] = inp
+    if outp is not None:
+        norm["output_tokens"] = outp
+    if total is not None:
+        norm["total_tokens"] = total
+    return norm
+
 def normalize_stream_event(ev: dict[str, Any]) -> dict[str, Any]:
     """把一次 SSE 流事件翻译成中立格式。
 
@@ -795,9 +824,10 @@ def normalize_stream_event(ev: dict[str, Any]) -> dict[str, Any]:
       - thinking:     思考/推理增量(字符串,可能为空)
       - tool_calls:   工具调用增量(list),每项为
                       {"index","id","name","arguments"}; index<0 表示独立一次调用
-      - usage / finish_reason: 透传
+      - usage:        归一化为 {"input_tokens","output_tokens","total_tokens"}
+      - finish_reason: 透传
     """
-    usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else None
+    usage = normalize_usage(ev.get("usage"))
     choice = (ev.get("choices") or [{}])[0]
     delta = choice.get("delta") or {}
     finish_reason = choice.get("finish_reason")
@@ -898,6 +928,8 @@ async def stream_chat(route: dict[str, Any], messages: list[dict[str, str]], sin
         "messages": messages,
         "temperature": temperature(),
         "stream": True,
+        # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
+        "stream_options": {"include_usage": True},
     }
     mt = max_tokens()
     if mt is not None:
@@ -1060,6 +1092,8 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
         "messages": messages,
         "temperature": temperature(),
         "stream": True,
+        # 流式模式下 usage 默认不下发;显式打开,最后一帧才带 token 统计
+        "stream_options": {"include_usage": True},
     }
     mt = max_tokens()
     if mt is not None:
