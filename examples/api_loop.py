@@ -1257,12 +1257,10 @@ async def warm_injection(session_id: str, *, is_new: bool) -> str:
         if not server:
             print("[api_loop:warm] 没有提供 breath 的 MCP server,跳过苏醒垫层")
             return ""
-        blocks: list[str] = []
         async def one(args: dict[str, Any], title: str) -> str:
             try:
                 t = await _breath_text(server, **args)
-                if t.strip():
-                    return f"【{title}】\n{t.strip()}"
+                return t.strip()
             except Exception as exc:
                 print(f"[api_loop:warm] breath({title}) failed: {type(exc).__name__}: {exc}")
             return ""
@@ -1271,8 +1269,17 @@ async def warm_injection(session_id: str, *, is_new: bool) -> str:
             jobs.append(({"mode": "handoff", "max_tokens": cfg["max_tokens"]}, "新窗口交接(handoff)"))
         jobs.append(({"domain": "feel", "is_session_start": True, "max_tokens": cfg["max_tokens"]}, "此刻心绪(feel)"))
         jobs.append(({"domain": "whisper", "is_session_start": True, "max_tokens": cfg["max_tokens"]}, "悄悄话(whisper)"))
-        results = await asyncio.gather(*(one(a, t) for a, t in jobs))
-        blocks = [r for r in results if r]
+        raws = await asyncio.gather(*(one(a, t) for a, t in jobs))
+        titles = [t for _, t in jobs]
+        blocks: list[str] = []
+        for raw, title in zip(raws, titles):
+            if raw:
+                blocks.append(f"【{title}】\n{raw}")
+        # feel/whisper 数据双标(whisper 桶 = type=feel + whisper 标)导致两边内容
+        # 完全相同时,去掉 whisper 块,避免同一批桶重复垫进上下文
+        dedup = len(raws) >= 2 and bool(raws[-1]) and raws[-1] == raws[-2]
+        if dedup:
+            blocks = [b for b in blocks if not b.startswith("【悄悄话(whisper)】")]
         if not blocks:
             return ""
         text = (
@@ -1288,6 +1295,8 @@ async def warm_injection(session_id: str, *, is_new: bool) -> str:
             for k in list(_LAST_HUMAN_SEEN)[:16]:
                 _LAST_HUMAN_SEEN.pop(k, None)
         kind = "handoff+feel+whisper" if is_new else "feel+whisper"
+        if dedup:
+            kind = kind.replace("+whisper", "(whisper与feel重复,已去重)")
         print(f"[api_loop:warm] 苏醒垫层已注入({kind}, {len(text)} chars, session={session_id or '(无会话)'})")
         return text
 
