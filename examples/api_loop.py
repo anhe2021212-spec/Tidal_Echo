@@ -607,6 +607,7 @@ def public_config() -> dict[str, Any]:
         "top_p": cfg.get("top_p", None),
         "max_tokens": cfg.get("max_tokens", MAX_TOKENS),
         "thinking_budget": cfg.get("thinking_budget", 0),
+        "gateway_session_header": gateway_session_header(),
         "injections": cfg.get("injections") or {"enabled": False, "entries": []},
         "proactive": proactive_public(),
         "active_session": active_session_id(),
@@ -1331,7 +1332,8 @@ async def complete_chat(route: dict[str, Any], messages: list[dict[str, Any]], t
         if isinstance(m, dict) and m.get("role") == "system":
             sys_content = str(m.get("content") or "")
             break
-    print(f"[api_loop:complete_chat] request body keys: {body_summary} | sys_len={len(sys_content)} warm={'Y' if '苏醒垫层' in sys_content else 'N'}")
+    sid = str(req_headers.get("X-Ombre-Session-Id") or "")
+    print(f"[api_loop:complete_chat] request body keys: {body_summary} | sys_len={len(sys_content)} warm={'Y' if '苏醒垫层' in sys_content else 'N'}" + (f" | sid={sid}" if sid else " | sid=-"))
 
     finish_reason_val = None
     async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
@@ -1665,6 +1667,30 @@ def _msgs_for_route(route: dict[str, Any], messages: list[dict[str, Any]]) -> li
     return messages
 
 
+def gateway_session_header() -> bool:
+    """是否给 Ombre 网关路由带 X-Ombre-Session-Id。默认开启。
+    每个 relay 会话一个新 id,让网关自己的"新窗口"机制、reasoning 续接缓存、
+    记忆注入轮次与去重状态按窗口隔离,不再被恒定的 "main" 跨会话污染。"""
+    try:
+        return bool(load_config().get("gateway_session_header", True))
+    except Exception:
+        return True
+
+
+def _route_with_session_header(route: dict[str, Any], session_id: str) -> dict[str, Any]:
+    """仅对 Ombre 网关路由(URL 含 "ombre")附加 X-Ombre-Session-Id=relay 会话 id。"""
+    if not session_id or not gateway_session_header():
+        return route
+    if "ombre" not in str(route.get("url") or "").lower():
+        return route
+    headers = dict(route.get("headers") or {})
+    if headers.get("X-Ombre-Session-Id") == session_id:
+        return route
+    out = dict(route)
+    out["headers"] = {**headers, "X-Ombre-Session-Id": session_id}
+    return out
+
+
 # ── 模型调用主入口:多模型 fallback ─────────────────────────────────────────
 async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", session_id: str = "", emit_stream: bool = False, on_thinking=None) -> dict[str, Any]:
     tried = []
@@ -1674,6 +1700,7 @@ async def run_model(messages: list[dict[str, Any]], *, stream_id: str = "", sess
         try:
             all_tools = await mcp_tools()
             route_key = (route.get("url", "").rstrip("/"), route.get("model", ""))
+            route = _route_with_session_header(route, session_id)
             if bool(all_tools) and route.get("model") in PROMPT_TOOLS_FORCE:
                 use_prompt_tools = True      # 显式强制:该模型走提示词工具协议
             elif FORCE_NATIVE_TOOLS:
@@ -1863,7 +1890,7 @@ async def _proactive_step() -> None:
         warm_block=warm_block,
     )
     try:
-        out = await run_model(messages, emit_stream=False)
+        out = await run_model(messages, session_id=session_id, emit_stream=False)
     except Exception as exc:
         _backoff(1800.0, f"模型调用异常：{type(exc).__name__}")
         print(f"[api_loop:proactive] model error: {type(exc).__name__}: {exc}")
@@ -2080,7 +2107,7 @@ async def loop_chat(request: Request):
         raise HTTPException(status_code=400, detail="empty text")
     session_id = str(body.get("session_id") or body.get("api_session") or active_session_id() or "").strip()
     messages = build_messages(text, before_id=None, session_id=session_id, use_context=bool(body.get("use_context", True)))
-    out = await run_model(messages, emit_stream=False)
+    out = await run_model(messages, session_id=session_id, emit_stream=False)
     return {"ok": True, "reply": out.get("text") or "", "api": out}
 
 
